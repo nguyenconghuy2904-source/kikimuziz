@@ -1,0 +1,103 @@
+{
+  "firmware_version": "2.0.3",
+  "build_date": "2025-10-18T23:40:31",
+  "board_type": "otto-robot",
+  "chip": "ESP32-S3",
+  "features": [
+    "Improved movement angles (35°/145°)",
+    "Wave hand in sitting position",
+    "Web volume control slider",
+    "Touch sensor IP display (5 touches)",
+    "Wake word support (Hi ESP, 你好小智)",
+    "Web interface (no password)",
+    "Otto Robot MCP control",
+    "WiFi station mode",
+    "MQTT support"
+  ],
+  "improvements": [
+    {
+      "type": "Movement",
+      "description": "Reduced walk angles from 80°/100° to 35°/145° for smoother motion"
+    },
+    {
+      "type": "Movement", 
+      "description": "Wave hand action now performs in sitting position"
+    },
+    {
+      "type": "Web Interface",
+      "description": "Added volume control slider (0-100%)"
+    },
+    {
+      "type": "Display",
+      "description": "Touch sensor 5 times to show station IP address"
+    }
+  ],
+  "pin_configuration": {
+    "LEFT_LEG_PIN": 17,
+    "RIGHT_LEG_PIN": 18,
+    "LEFT_FOOT_PIN": 12,
+    "RIGHT_FOOT_PIN": 38,
+    "TOUCH_SENSOR": 2
+  },
+  "binaries": {
+    "firmware_complete": {
+      "file": "firmware-complete.bin",
+      "description": "Complete merged binary (bootloader + app + partitions + assets)",
+      "flash_address": "0x0",
+      "size_mb": 8.77
+    },
+    "app_only": {
+      "file": "xiaozhi.bin",
+      "description": "Application binary only",
+      "flash_address": "0x20000",
+      "size_mb": 3.49
+    }
+  },
+  "flash_commands": {
+    "simple": "esptool.py --chip esp32s3 --port COM24 --baud 460800 write_flash 0x0 firmware-complete.bin",
+    "advanced": "esptool.py --chip esp32s3 --port COM24 --baud 460800 write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB 0x0 bootloader.bin 0x8000 partition-table.bin 0xd000 ota_data_initial.bin 0x20000 xiaozhi.bin 0x800000 generated_assets.bin"
+  },
+  "wake_words": [
+    {
+      "model": "wn9s_hiesp",
+      "phrase": "Hi ESP",
+      "language": "English"
+    },
+    {
+      "model": "wn9_nihaoxiaozhi_tts",
+      "phrase": "你好小智",
+      "language": "Chinese"
+    }
+  ],
+  "robot_actions": [
+    "walk_forward",
+    "walk_backward", 
+    "turn_left",
+    "turn_right",
+    "sit_down",
+    "lie_down",
+    "jump",
+    "bow",
+    "dance",
+    "wave_right_foot",
+    "dance_4_feet",
+    "swing",
+    "stretch",
+    "stop",
+    "home",
+    "defend",
+    "attack",
+    "celebrate",
+    "scratch",
+    "greet",
+    "retreat",
+    "search"
+  ],
+  "changelog": [
+    "2025-10-18: Removed news function",
+    "2025-10-18: Reduced movement angles to 35°/145°",
+    "2025-10-18: Wave hand in sitting position",
+    "2025-10-18: Added web volume control",
+    "2025-10-18: Added touch sensor IP display"
+  ]
+}

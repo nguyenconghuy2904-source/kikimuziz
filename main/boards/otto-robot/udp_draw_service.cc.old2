@@ -1,0 +1,232 @@
+#include "udp_draw_service.h"
+
+#include <esp_log.h>
+#include <cstring>
+#include <cstdio>
+
+#define TAG "UdpDrawService"
+
+UdpDrawService::UdpDrawService(DrawingDisplay* display, uint16_t port)
+    : display_(display),
+      port_(port),
+      socket_fd_(-1),
+      task_handle_(nullptr),
+      running_(false),
+      drawing_mode_(false),
+      packets_received_(0),
+      packets_processed_(0),
+      pixels_drawn_(0),
+      errors_(0) {
+    ESP_LOGI(TAG, "🎨 UDP Drawing Service initialized on port %d", port_);
+}
+
+UdpDrawService::~UdpDrawService() {
+    Stop();
+}
+
+bool UdpDrawService::Start() {
+    if (running_) {
+        ESP_LOGW(TAG, "Service already running");
+        return true;
+    }
+
+    // Create UDP socket
+    socket_fd_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_fd_ < 0) {
+        ESP_LOGE(TAG, "Failed to create UDP socket: %d", errno);
+        return false;
+    }
+
+    // Bind to port
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_addr.sin_port = htons(port_);
+
+    if (bind(socket_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        ESP_LOGE(TAG, "Failed to bind UDP socket: %d", errno);
+        close(socket_fd_);
+        socket_fd_ = -1;
+        return false;
+    }
+
+    // Set socket timeout
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    // Create UDP receive task
+    running_ = true;
+    BaseType_t result = xTaskCreate(
+        UdpTaskWrapper,
+        "udp_draw_task",
+        4096,
+        this,
+        5,  // Priority
+        &task_handle_
+    );
+
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create UDP task");
+        running_ = false;
+        close(socket_fd_);
+        socket_fd_ = -1;
+        return false;
+    }
+
+    ESP_LOGI(TAG, "✅ UDP Drawing Service started on port %d", port_);
+    ESP_LOGI(TAG, "📱 Connect Android app to ESP32 IP address");
+    ESP_LOGI(TAG, "🎨 Use EnableDrawingMode(true) to start drawing");
+    return true;
+}
+
+void UdpDrawService::Stop() {
+    if (!running_) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Stopping UDP Drawing Service...");
+    running_ = false;
+
+    if (task_handle_) {
+        vTaskDelete(task_handle_);
+        task_handle_ = nullptr;
+    }
+
+    if (socket_fd_ >= 0) {
+        close(socket_fd_);
+        socket_fd_ = -1;
+    }
+
+    if (drawing_mode_) {
+        EnableDrawingMode(false);
+    }
+
+    ESP_LOGI(TAG, "UDP Drawing Service stopped");
+}
+
+void UdpDrawService::UdpTaskWrapper(void* param) {
+    UdpDrawService* service = static_cast<UdpDrawService*>(param);
+    service->UdpTask();
+}
+
+void UdpDrawService::UdpTask() {
+    char buffer[256];
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(client_addr);
+
+    ESP_LOGI(TAG, "UDP receive task started");
+
+    while (running_) {
+        // Receive UDP packet
+        int len = recvfrom(socket_fd_, buffer, sizeof(buffer) - 1, 0,
+                          (struct sockaddr*)&client_addr, &client_addr_len);
+
+        if (len > 0) {
+            buffer[len] = '\0';
+            packets_received_++;
+
+            // Only process if drawing mode is enabled
+            if (drawing_mode_) {
+                ProcessPacket(buffer, len);
+            } else {
+                ESP_LOGD(TAG, "Packet ignored (drawing mode disabled): %s", buffer);
+            }
+        } else if (len < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            ESP_LOGE(TAG, "recvfrom error: %d", errno);
+            errors_++;
+        }
+
+        // Small delay to prevent watchdog timeout
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    ESP_LOGI(TAG, "UDP receive task ended");
+    vTaskDelete(NULL);
+}
+
+void UdpDrawService::ProcessPacket(const char* data, int len) {
+    if (!display_) {
+        errors_++;
+        return;
+    }
+
+    // Parse packet format: "x,y,state"
+    int x, y, state;
+    int parsed = sscanf(data, "%d,%d,%d", &x, &y, &state);
+
+    if (parsed != 3) {
+        ESP_LOGW(TAG, "Invalid packet format: %s (expected x,y,state)", data);
+        errors_++;
+        return;
+    }
+
+    // Validate coordinates
+    int width = display_->width();
+    int height = display_->height();
+
+    if (x < 0 || x >= width || y < 0 || y >= height) {
+        ESP_LOGD(TAG, "Coordinates out of bounds: (%d,%d), display size: %dx%d", x, y, width, height);
+        errors_++;
+        return;
+    }
+
+    // Draw pixel on DrawingDisplay
+    if (display_->IsCanvasEnabled()) {
+        display_->DrawPixel(x, y, state != 0);
+        packets_processed_++;
+        pixels_drawn_++;
+        ESP_LOGD(TAG, "✏️ Drew pixel at (%d,%d) state=%d", x, y, state);
+    } else {
+        errors_++;
+    }
+}
+
+void UdpDrawService::EnableDrawingMode(bool enable) {
+    if (enable == drawing_mode_) {
+        return;
+    }
+
+    drawing_mode_ = enable;
+
+    // Enable/disable canvas on DrawingDisplay
+    display_->EnableCanvas(enable);
+    
+    if (enable) {
+            ESP_LOGI(TAG, "🎨 Drawing mode ENABLED - Ready to receive drawings");
+        } else {
+            ESP_LOGI(TAG, "🎨 Drawing mode DISABLED");
+        }
+    } else {
+        ESP_LOGE(TAG, "Display is not OttoEmojiDisplay, cannot enable drawing mode");
+    }
+}
+
+void UdpDrawService::InitializeCanvas() {
+    // No-op: handled by OttoEmojiDisplay
+}
+
+void UdpDrawService::CleanupCanvas() {
+    // No-op: handled by OttoEmojiDisplay
+}
+
+void UdpDrawService::ClearCanvas() {
+    OttoEmojiDisplay* otto_display = dynamic_cast<OttoEmojiDisplay*>(display_);
+    if (otto_display && otto_display->IsDrawingCanvasEnabled()) {
+        otto_display->ClearDrawingCanvas();
+        ESP_LOGI(TAG, "Canvas cleared");
+    } else {
+        ESP_LOGW(TAG, "No canvas to clear");
+    }
+}
+
+UdpDrawService::Stats UdpDrawService::GetStats() const {
+    Stats stats;
+    stats.packets_received = packets_received_;
+    stats.packets_processed = packets_processed_;
+    stats.pixels_drawn = pixels_drawn_;
+    stats.errors = errors_;
+    return stats;
+}

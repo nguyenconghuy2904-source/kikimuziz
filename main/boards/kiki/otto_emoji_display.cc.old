@@ -1,0 +1,329 @@
+#include "otto_emoji_display.h"
+#include "lvgl_theme.h"
+
+#include <esp_log.h>
+#include <esp_timer.h>
+#include <font_awesome.h>
+
+#include <algorithm>
+#include <cstring>
+#include <string>
+
+#include "display/lcd_display.h"
+#include "application.h"
+#include "mcp_server.h"
+#include "otto_webserver.h"
+
+#define TAG "OttoEmojiDisplay"
+
+// 表情映射表 - 将原版21种表情映射到现有6个GIF
+const OttoEmojiDisplay::EmotionMap OttoEmojiDisplay::emotion_maps_[] = {
+    // 中性/平静类表情 -> staticstate
+    {"neutral", &staticstate},
+    {"relaxed", &staticstate},
+    {"sleepy", &staticstate},
+
+    // 积极/开心类表情 -> happy
+    {"happy", &happy},
+    {"laughing", &happy},
+    {"funny", &happy},
+    {"loving", &happy},
+    {"confident", &happy},
+    {"winking", &happy},
+    {"cool", &happy},
+    {"delicious", &happy},
+    {"kissy", &happy},
+    {"silly", &happy},
+
+    // 悲伤类表情 -> sad
+    {"sad", &sad},
+    {"crying", &sad},
+
+    // 愤怒类表情 -> anger
+    {"angry", &anger},
+
+    // 惊讶类表情 -> scare
+    {"surprised", &scare},
+    {"shocked", &scare},
+
+    // 思考/困惑类表情 -> buxue
+    {"thinking", &buxue},
+    {"confused", &buxue},
+    {"embarrassed", &buxue},
+
+    {nullptr, nullptr}  // 结束标记
+};
+
+OttoEmojiDisplay::OttoEmojiDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                                   int width, int height, int offset_x, int offset_y, bool mirror_x,
+                                   bool mirror_y, bool swap_xy)
+    : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy),
+      emotion_gif_(nullptr), use_otto_emoji_(true) {  // Start with Otto GIF mode by default
+    SetupGifContainer();
+};
+
+void OttoEmojiDisplay::SetupGifContainer() {
+    DisplayLockGuard lock(this);
+
+    if (emoji_label_) {
+        lv_obj_del(emoji_label_);
+        emoji_label_ = nullptr;
+    }
+
+    if (emoji_image_) {
+        lv_obj_del(emoji_image_);
+        emoji_image_ = nullptr;
+    }
+
+    if (chat_message_label_) {
+        lv_obj_del(chat_message_label_);
+        chat_message_label_ = nullptr;
+    }
+
+    if (preview_image_) {
+        lv_obj_del(preview_image_);
+        preview_image_ = nullptr;
+    }
+
+    if (emoji_box_) {
+        lv_obj_del(emoji_box_);
+        emoji_box_ = nullptr;
+    }
+
+    if (content_) {
+        lv_obj_del(content_);
+        content_ = nullptr;
+    }
+
+    emotion_gif_ = nullptr;
+
+    content_ = lv_obj_create(container_);
+    lv_obj_set_scrollbar_mode(content_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_size(content_, LV_HOR_RES, LV_HOR_RES);
+    lv_obj_set_style_bg_opa(content_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(content_, 0, 0);
+    lv_obj_set_flex_grow(content_, 1);
+    lv_obj_center(content_);
+
+    emoji_box_ = lv_obj_create(content_);
+    lv_obj_set_size(emoji_box_, LV_HOR_RES, LV_HOR_RES);
+    lv_obj_set_style_bg_opa(emoji_box_, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(emoji_box_, 0, 0);
+    lv_obj_set_style_pad_all(emoji_box_, 0, 0);
+    lv_obj_set_flex_flow(emoji_box_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(emoji_box_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_center(emoji_box_);
+
+    emoji_label_ = lv_label_create(emoji_box_);
+    lv_label_set_text(emoji_label_, "");
+    lv_obj_set_style_border_width(emoji_label_, 0, 0);
+    lv_obj_center(emoji_label_);
+    
+    emoji_image_ = lv_img_create(emoji_box_);
+    lv_obj_center(emoji_image_);
+    lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+
+    emotion_gif_ = lv_gif_create(emoji_box_);
+    int gif_size = LV_HOR_RES;
+    lv_obj_set_size(emotion_gif_, gif_size, gif_size);
+    lv_obj_set_style_border_width(emotion_gif_, 0, 0);
+    lv_obj_set_style_bg_opa(emotion_gif_, LV_OPA_TRANSP, 0);
+    
+    // PERFORMANCE OPTIMIZATIONS for GIF rendering
+    lv_obj_add_flag(emotion_gif_, LV_OBJ_FLAG_ADV_HITTEST);  // Faster hit testing
+    lv_obj_clear_flag(emotion_gif_, LV_OBJ_FLAG_SCROLLABLE); // Disable scrolling
+    lv_obj_set_style_radius(emotion_gif_, 0, 0);             // No rounded corners
+    lv_obj_set_style_shadow_width(emotion_gif_, 0, 0);       // No shadows
+    
+    lv_obj_center(emotion_gif_);
+    
+    // Set visibility based on initial mode
+    if (use_otto_emoji_) {
+        // Otto GIF mode: show GIF, hide label
+        lv_gif_set_src(emotion_gif_, &happy);
+        lv_obj_remove_flag(emotion_gif_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        // Twemoji text mode: hide GIF, show label
+        lv_gif_set_src(emotion_gif_, &staticstate);
+        lv_obj_add_flag(emotion_gif_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    chat_message_label_ = lv_label_create(content_);
+    lv_label_set_text(chat_message_label_, "");
+    lv_obj_set_width(chat_message_label_, LV_HOR_RES * 0.9);
+    lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_text_align(chat_message_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(chat_message_label_, lv_color_white(), 0);
+    lv_obj_set_style_border_width(chat_message_label_, 0, 0);
+
+    lv_obj_set_style_bg_opa(chat_message_label_, LV_OPA_70, 0);
+    lv_obj_set_style_bg_color(chat_message_label_, lv_color_black(), 0);
+    lv_obj_set_style_pad_ver(chat_message_label_, 5, 0);
+
+    lv_obj_align(chat_message_label_, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    preview_image_ = lv_image_create(content_);
+    lv_obj_set_size(preview_image_, LV_HOR_RES / 2, LV_VER_RES / 2);
+    lv_obj_center(preview_image_);
+    lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
+
+    auto& theme_manager = LvglThemeManager::GetInstance();
+    auto theme = theme_manager.GetTheme("dark");
+    if (theme != nullptr) {
+        LcdDisplay::SetTheme(theme);
+    }
+}
+
+void OttoEmojiDisplay::SetEmotion(const char* emotion) {
+    if (!emotion) return;
+    
+    // For text emoji mode, directly call parent class without rate limiting
+    if (!use_otto_emoji_) {
+        DisplayLockGuard lock(this);
+        LcdDisplay::SetEmotion(emotion);
+        ESP_LOGI(TAG, "📝 Text表情: %s", emotion);
+        return;
+    }
+    
+    // Otto GIF emoji mode requires emotion_gif_
+    if (!emotion_gif_) return;
+    
+    static std::string cached_emotion;
+    static const lv_img_dsc_t* cached_gif = nullptr;
+    
+    // Rate limiting: only change emotion every 200ms (5 FPS max)
+    static uint64_t last_emotion_time = 0;
+    uint64_t current_time = esp_timer_get_time() / 1000; // Convert to milliseconds
+    
+    if (current_time - last_emotion_time < 200) {
+        return; // Skip if too frequent
+    }
+    
+    // Check if emotion is the same to avoid unnecessary processing
+    if (emotion && cached_emotion == emotion && cached_gif) {
+        return; // Skip if same emotion
+    }
+    
+    DisplayLockGuard lock(this);
+    
+    // Find emotion in emoji maps first (with cache check)
+    if (emotion && cached_emotion == emotion && cached_gif) {
+        lv_gif_set_src(emotion_gif_, cached_gif);
+        ESP_LOGI(TAG, "🤖 Otto表情(缓存): %s", emotion);
+        return;
+    }
+    
+    // Find emotion in map
+    for (const auto& map : emotion_maps_) {
+        if (map.name && strcmp(map.name, emotion) == 0) {
+            lv_gif_set_src(emotion_gif_, map.gif);
+            // Cache the result
+            cached_emotion = map.name;
+            cached_gif = map.gif;
+            last_emotion_time = current_time;
+            ESP_LOGI(TAG, "🤖 Otto表情: %s", emotion);
+            return;
+        }
+    }
+    
+    // Default fallback
+    lv_gif_set_src(emotion_gif_, &staticstate);
+    cached_emotion = "default";
+    cached_gif = &staticstate;
+    last_emotion_time = current_time;
+}
+
+void OttoEmojiDisplay::SetChatMessage(const char* role, const char* content) {
+    DisplayLockGuard lock(this);
+    if (chat_message_label_ == nullptr) {
+        return;
+    }
+
+    if (content == nullptr || strlen(content) == 0) {
+        lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    lv_label_set_text(chat_message_label_, content);
+    lv_obj_remove_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
+
+    ESP_LOGI(TAG, "设置聊天消息 [%s]: %s", role, content);
+
+    // 🔫 Keyword detection: If user says "súng nè" or "bằng bằng", trigger defend action
+    if (strcmp(role, "user") == 0 && content != nullptr) {
+                // Keyword detection moved to application.cc to prevent text display
+        // When keywords like "bằng bằng" are detected, application.cc now:
+        // 1. Shows emoji ONLY (no chat message)
+        // 2. Triggers defend action sequence
+        // This avoids duplicate processing here
+    }
+}
+
+void OttoEmojiDisplay::UpdateStatusBar(bool update_all) {
+    // SUPER aggressive status bar rate limiting to eliminate all lag
+    static uint32_t last_status_update = 0;
+    uint32_t now = esp_timer_get_time() / 1000; // Convert to milliseconds
+    
+    // Only update status bar every 2 seconds unless forced
+    if (!update_all && (now - last_status_update < 2000)) { // 0.5 FPS limit
+        return;
+    }
+    last_status_update = now;
+
+    // 调用父类的UpdateStatusBar但禁用低电量弹窗
+    DisplayLockGuard lock(this);
+    
+    // 先调用父类方法更新其他状态栏信息 - but limit frequency
+    static uint32_t last_parent_update = 0;
+    if (update_all || (now - last_parent_update > 5000)) { // Parent update every 5 seconds max
+        SpiLcdDisplay::UpdateStatusBar(update_all);
+        last_parent_update = now;
+    }
+}
+
+void OttoEmojiDisplay::SetEmojiMode(bool use_otto_emoji) {
+    DisplayLockGuard lock(this);
+    
+    if (use_otto_emoji_ == use_otto_emoji) {
+        return; // 没有变化，不需要处理
+    }
+    
+    use_otto_emoji_ = use_otto_emoji;
+    
+    if (use_otto_emoji_) {
+        // 切换到Otto emoji模式
+        ESP_LOGI(TAG, "切换到Otto GIF表情模式");
+        
+        // 显示GIF容器，隐藏默认emoji
+        if (emotion_gif_) {
+            lv_obj_remove_flag(emotion_gif_, LV_OBJ_FLAG_HIDDEN);
+            // CRITICAL: Re-activate the GIF by resetting the source
+            lv_gif_set_src(emotion_gif_, &staticstate);
+            ESP_LOGI(TAG, "🔄 GIF重新激活");
+        }
+        if (emoji_label_) {
+            lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (emoji_image_) {
+            lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+        }
+        // Also make sure we set a valid Otto emotion to draw immediately
+        SetEmotion("neutral");
+    } else {
+        // 切换到默认emoji模式 (Twemoji text)
+        ESP_LOGI(TAG, "切换到Twemoji文本表情模式");
+        
+        // 隐藏GIF容器，显示文本emoji label
+        if (emotion_gif_) {
+            lv_obj_add_flag(emotion_gif_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (emoji_label_) {
+            lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+        }
+        // Set default happy Twemoji
+        SetEmotion("happy");
+    }
+}
+
