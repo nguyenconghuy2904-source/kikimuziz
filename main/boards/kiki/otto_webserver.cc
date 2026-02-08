@@ -4010,6 +4010,29 @@ h1 {
         </div>
     </div>
     
+    <div class="pose-section" style="background:linear-gradient(145deg,rgba(255,193,7,0.15),rgba(255,152,0,0.1));border:1px solid rgba(255,193,7,0.3);border-radius:15px;padding:15px;margin:10px 0">
+        <div style="font-weight:bold;color:#ffc107;margin-bottom:8px">🐕 Hành động khi phát nhạc</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <select id="musicPose" onchange="saveMusicPose()" style="flex:1;min-width:140px;padding:10px;border:2px solid #ffc107;border-radius:8px;font-size:14px;background:#1a1a2e;color:#fff">
+                <option value="none">❌ Không có Pose</option>
+                <option value="sit">🪑 Ngồi (Sit)</option>
+                <option value="wave">👋 Vẫy tay (Wave)</option>
+                <option value="bow">🙇 Cúi chào (Bow)</option>
+                <option value="stretch">🙆 Vươn vai (Stretch)</option>
+                <option value="swing">💃 Lắc lư (Swing)</option>
+                <option value="dance">🕺 Nhảy (Dance)</option>
+            </select>
+            <select id="musicActionSlot" onchange="saveMusicPose()" style="flex:1;min-width:140px;padding:10px;border:2px solid #9c27b0;border-radius:8px;font-size:14px;background:#1a1a2e;color:#fff">
+                <option value="0">⚪ Không hành động lưu</option>
+                <option value="1">📍 Vị trí 1</option>
+                <option value="2">📍 Vị trí 2</option>
+                <option value="3">📍 Vị trí 3</option>
+            </select>
+        </div>
+        <div style="font-size:11px;color:#aaa;margin-top:6px">💡 Chọn pose/hành động sẽ tự động thực hiện mỗi khi phát nhạc</div>
+        <div id="poseStatus" style="display:none;padding:8px;border-radius:8px;margin-top:8px;font-size:13px;text-align:center"></div>
+    </div>
+
     <div class="status-bar">
         <span><span class="status-dot idle" id="statusDot"></span><span id="statusText">Sẵn sàng</span></span>
         <span id="bufferInfo"></span>
@@ -4202,9 +4225,49 @@ document.getElementById('searchInput').addEventListener('keypress', e => {
     if (e.key === 'Enter') searchMusic();
 });
 
+function saveMusicPose() {
+    var pose = document.getElementById('musicPose').value;
+    var slot = document.getElementById('musicActionSlot').value;
+    var ps = document.getElementById('poseStatus');
+    ps.style.display = 'block';
+    ps.style.background = 'rgba(255,193,7,0.2)';
+    ps.style.color = '#ffc107';
+    ps.textContent = '⏳ Đang lưu...';
+    fetch('/music/pose_save?pose=' + pose + '&action_slot=' + slot)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.success) {
+                ps.style.background = 'rgba(76,175,80,0.2)';
+                ps.style.color = '#4caf50';
+                ps.textContent = '✅ ' + d.message;
+            } else {
+                ps.style.background = 'rgba(244,67,54,0.2)';
+                ps.style.color = '#f44336';
+                ps.textContent = '❌ ' + d.message;
+            }
+            setTimeout(function() { ps.style.display = 'none'; }, 2000);
+        })
+        .catch(function(e) {
+            ps.style.background = 'rgba(244,67,54,0.2)';
+            ps.style.color = '#f44336';
+            ps.textContent = '❌ Lỗi kết nối';
+        });
+}
+
+function loadMusicPose() {
+    fetch('/music/pose_save?get=1')
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.pose) document.getElementById('musicPose').value = d.pose;
+            if (d.action_slot !== undefined) document.getElementById('musicActionSlot').value = d.action_slot;
+        })
+        .catch(function(e) {});
+}
+
 // Init
 renderHistory();
 checkStatus();
+loadMusicPose();
 setInterval(checkStatus, 3000);
 </script>
 </body>
@@ -4274,6 +4337,63 @@ esp_err_t otto_music_play_handler(httpd_req_t *req) {
     snprintf(response, sizeof(response), 
              "{\"success\":true,\"title\":\"%s\",\"message\":\"Starting playback...\"}", decoded);
     httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+// Music pose save/load handler
+esp_err_t otto_music_pose_handler(httpd_req_t *req) {
+    webserver_reset_auto_stop_timer();
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_type(req, "application/json");
+    
+    char buf[256] = "";
+    esp_err_t query_err = httpd_req_get_url_query_str(req, buf, sizeof(buf));
+    
+    if (query_err == ESP_OK) {
+        // Check if this is a GET request (load)
+        char get_flag[4] = "";
+        if (httpd_query_key_value(buf, "get", get_flag, sizeof(get_flag)) == ESP_OK) {
+            // Load saved music pose from NVS
+            nvs_handle_t nvs_handle;
+            char pose[32] = "none";
+            int8_t action_slot = 0;
+            if (nvs_open("storage", NVS_READONLY, &nvs_handle) == ESP_OK) {
+                size_t pose_len = sizeof(pose);
+                nvs_get_str(nvs_handle, "music_pose", pose, &pose_len);
+                nvs_get_i8(nvs_handle, "music_act_slot", &action_slot);
+                nvs_close(nvs_handle);
+            }
+            char response[128];
+            snprintf(response, sizeof(response), "{\"pose\":\"%s\",\"action_slot\":%d}", pose, action_slot);
+            httpd_resp_sendstr(req, response);
+            return ESP_OK;
+        }
+        
+        // Save pose and action slot
+        char pose[32] = "none";
+        char action_slot_str[8] = "0";
+        httpd_query_key_value(buf, "pose", pose, sizeof(pose));
+        httpd_query_key_value(buf, "action_slot", action_slot_str, sizeof(action_slot_str));
+        
+        int8_t action_slot = (int8_t)atoi(action_slot_str);
+        if (action_slot < 0 || action_slot > 3) action_slot = 0;
+        
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+        if (err == ESP_OK) {
+            nvs_set_str(nvs_handle, "music_pose", pose);
+            nvs_set_i8(nvs_handle, "music_act_slot", action_slot);
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+            ESP_LOGI(TAG, "💾 Saved music pose: %s, action_slot: %d", pose, action_slot);
+            httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Đã lưu hành động khi phát nhạc!\"}");
+        } else {
+            httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"NVS error!\"}");
+        }
+    } else {
+        httpd_resp_sendstr(req, "{\"success\":false,\"message\":\"Missing parameters\"}");
+    }
+    
     return ESP_OK;
 }
 
@@ -5945,6 +6065,14 @@ esp_err_t otto_start_webserver(void) {
             .user_ctx = NULL
         };
         httpd_register_uri_handler(server, &music_status_uri);
+        
+        httpd_uri_t music_pose_uri = {
+            .uri = "/music/pose_save",
+            .method = HTTP_GET,
+            .handler = otto_music_pose_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &music_pose_uri);
         // ============= END MUSIC PLAYER ENDPOINTS =============
         
 #ifdef TOUCH_TTP223_GPIO

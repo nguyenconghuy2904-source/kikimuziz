@@ -623,6 +623,39 @@ extern "C" {
         bool result = s_music_player->Download(song, "");
         if (result) {
             ESP_LOGI("OttoMusic", "✅ Started playing: %s", song.c_str());
+            
+            // Execute saved music pose/action from NVS
+            nvs_handle_t nvs_handle;
+            if (nvs_open("storage", NVS_READONLY, &nvs_handle) == ESP_OK) {
+                char pose[32] = "none";
+                int8_t action_slot = 0;
+                size_t pose_len = sizeof(pose);
+                nvs_get_str(nvs_handle, "music_pose", pose, &pose_len);
+                nvs_get_i8(nvs_handle, "music_act_slot", &action_slot);
+                nvs_close(nvs_handle);
+                
+                // Execute pose action
+                if (strcmp(pose, "none") != 0) {
+                    int pose_action = -1;
+                    if (strcmp(pose, "sit") == 0) pose_action = ACTION_DOG_SIT_DOWN;
+                    else if (strcmp(pose, "wave") == 0) pose_action = ACTION_DOG_WAVE_RIGHT_FOOT;
+                    else if (strcmp(pose, "bow") == 0) pose_action = ACTION_DOG_BOW;
+                    else if (strcmp(pose, "stretch") == 0) pose_action = ACTION_DOG_STRETCH;
+                    else if (strcmp(pose, "swing") == 0) pose_action = ACTION_DOG_SWING;
+                    else if (strcmp(pose, "dance") == 0) pose_action = ACTION_DOG_DANCE;
+                    
+                    if (pose_action >= 0) {
+                        ESP_LOGI("OttoMusic", "🐕 Executing music pose: %s (action=%d)", pose, pose_action);
+                        otto_controller_queue_action(pose_action, 1, 1500, 0, 0);
+                    }
+                }
+                
+                // Execute saved memory slot action
+                if (action_slot >= 1 && action_slot <= 3) {
+                    ESP_LOGI("OttoMusic", "🎭 Executing music action slot %d", action_slot);
+                    otto_play_memory_slot(action_slot);
+                }
+            }
         } else {
             ESP_LOGE("OttoMusic", "❌ Failed to play: %s", song.c_str());
         }

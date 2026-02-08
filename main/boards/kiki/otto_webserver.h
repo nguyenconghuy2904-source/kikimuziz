@@ -136,6 +136,7 @@ esp_err_t otto_music_page_handler(httpd_req_t *req);
 esp_err_t otto_music_play_handler(httpd_req_t *req);
 esp_err_t otto_music_stop_handler(httpd_req_t *req);
 esp_err_t otto_music_status_handler(httpd_req_t *req);
+esp_err_t otto_music_pose_handler(httpd_req_t *req);
 
 // Music player control (implemented in otto_robot.cc)
 void otto_set_music_player(void* player);
