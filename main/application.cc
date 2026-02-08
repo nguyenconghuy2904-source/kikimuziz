@@ -9,6 +9,7 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
+#include "boards/common/music.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -18,7 +19,9 @@
 #include <font_awesome.h>
 #include <algorithm>
 #include <string>
+#include <vector>
 #include <esp_netif.h>
+#include <nvs_flash.h>
 
 // Include otto-robot specific headers if building for otto-robot board
 #ifdef CONFIG_BOARD_TYPE_OTTO_ROBOT
@@ -487,6 +490,29 @@ void Application::Start() {
         ESP_LOGI(TAG, "=========================================");
         
         if (strcmp(type->valuestring, "tts") == 0) {
+            // 🎵 LOGIC QUAN TRỌNG: Block TTS khi nhạc đang tải
+            // 
+            // Khi user nói "phát bài X", flow là:
+            //   1. Server gửi MCP play_music → client bắt đầu tải nhạc
+            //   2. Server có thể gửi thêm TTS hỏi "bạn muốn phát X đúng không?"
+            //   3. Server có thể gửi LLM emotion
+            //
+            // NHƯNG khi nhạc ĐÃ BẮT ĐẦU TẢI (IsPreparing/IsDownloading):
+            //   - User ĐÃ CHỌN BÀI THÀNH CÔNG → không cần AI hỏi thêm
+            //   - Device NÊN IM LẶNG → về IDLE để phát nhạc
+            //   - TTS/LLM THỪA THÃI → vì user đã quyết định rồi
+            //   - SSL CẦN SRAM → TTS sẽ chiếm SRAM gây fail SSL
+            //
+            // 🎵 Block TTS khi nhạc đang hoạt động (preparing/playing/downloading)
+            // Lý do: User đã chọn bài → không cần AI hỏi thêm
+            // Học từ Maggotxy/TienHuyIoT: Block TTS trong toàn bộ quá trình phát nhạc
+            auto music = Board::GetInstance().GetMusic();
+            if (music && (music->IsPreparing() || music->IsPlaying() || music->IsDownloading())) {
+                ESP_LOGI(TAG, "🎵 Music active (prep=%d, play=%d, dl=%d) - blocking TTS",
+                         music->IsPreparing(), music->IsPlaying(), music->IsDownloading());
+                return;
+            }
+            
             auto state = cJSON_GetObjectItem(root, "state");
             if (!state || !cJSON_IsString(state)) {
                 ESP_LOGW(TAG, "TTS message missing 'state' field");
@@ -495,6 +521,13 @@ void Application::Start() {
             ESP_LOGI(TAG, "TTS state: %s", state->valuestring);
             
             if (strcmp(state->valuestring, "start") == 0) {
+                // 🎵 Block TTS start khi nhạc đang hoạt động
+                auto music_check = Board::GetInstance().GetMusic();
+                if (music_check && (music_check->IsPreparing() || music_check->IsPlaying() || music_check->IsDownloading())) {
+                    ESP_LOGI(TAG, "🎵 Music active - blocking TTS start");
+                    return;
+                }
+                
                 Schedule([this]() {
                     aborted_ = false;
                     ESP_LOGI(TAG, "TTS start received, current state: %d, setting to speaking", device_state_);
@@ -540,13 +573,28 @@ void Application::Start() {
                         //     display->SetChatMessage("assistant", "");
                         // }
                         
-                        // Always go to Listening after TTS ends (user requested)
-                        // Reset listening mode to auto-stop for continuous conversation
-                        listening_mode_ = aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
-                        SetDeviceState(kDeviceStateListening);
+                        // Don't go to Listening if music is playing or downloading - stay in IDLE
+                        auto music = Board::GetInstance().GetMusic();
+                        if (music && (music->IsPlaying() || music->IsDownloading() || music->IsPreparing())) {
+                            ESP_LOGI(TAG, "🎵 Music active (play=%d, dl=%d, prep=%d), staying in IDLE state (not going to Listening)",
+                                     music->IsPlaying(), music->IsDownloading(), music->IsPreparing());
+                            SetDeviceState(kDeviceStateIdle);
+                        } else {
+                            // Always go to Listening after TTS ends (user requested)
+                            // Reset listening mode to auto-stop for continuous conversation
+                            listening_mode_ = aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
+                            SetDeviceState(kDeviceStateListening);
+                        }
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
+                // 🎵 Block TTS sentence_start khi nhạc đang hoạt động
+                auto music_check = Board::GetInstance().GetMusic();
+                if (music_check && (music_check->IsPreparing() || music_check->IsPlaying() || music_check->IsDownloading())) {
+                    ESP_LOGI(TAG, "🎵 Music active - blocking TTS sentence_start");
+                    return;
+                }
+                
                 auto text = cJSON_GetObjectItem(root, "text");
                 if (cJSON_IsString(text)) {
                     std::string tts_text = text->valuestring;
@@ -829,86 +877,71 @@ void Application::Start() {
                 // Do NOT return - allow LLM to process and respond, but emoji stays locked
             }
             
-            // Check for custom delicious keyword from NVS
-            // Force "delicious" emoji and block other emojis until TTS ends
+            // Check for custom delicious keyword (cached in memory for instant matching)
+            // Học từ cách shoot command hoạt động: match ngay lập tức, không đọc NVS mỗi lần
 #if defined(CONFIG_BOARD_TYPE_OTTO_ROBOT) || defined(CONFIG_BOARD_TYPE_KIKI)
             {
-                nvs_handle_t nvs_handle;
-                char delicious_kw[128] = "";
-                char delicious_emoji[32] = "delicious";
-                int8_t kw_action_slot = 0;
-                esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
-                if (err == ESP_OK) {
-                    size_t kw_len = sizeof(delicious_kw);
-                    size_t emo_len = sizeof(delicious_emoji);
-                    nvs_get_str(nvs_handle, "delicious_kw", delicious_kw, &kw_len);
-                    nvs_get_str(nvs_handle, "delicious_emo", delicious_emoji, &emo_len);
-                    nvs_get_i8(nvs_handle, "kw_action_slot", &kw_action_slot);
-                    nvs_close(nvs_handle);
-                    ESP_LOGI(TAG, "🔑 Loaded keyword: '%s', emoji: '%s', action_slot: %d", delicious_kw, delicious_emoji, kw_action_slot);
-                } else {
-                    ESP_LOGW(TAG, "Failed to open NVS for delicious_kw: %s", esp_err_to_name(err));
+                // Load keywords from NVS on first use (lazy loading)
+                if (!keywords_loaded_) {
+                    ReloadCustomKeywords();
                 }
                 
-                if (strlen(delicious_kw) > 0) {
-                    // Support multiple keywords separated by comma
-                    // Also normalize both keyword and message for better matching
-                    std::string kw_str = delicious_kw;
+                if (!cached_keywords_.empty()) {
                     bool keyword_found = false;
+                    std::string matched_kw;
                     
-                    // Normalize message for Vietnamese: convert to lowercase
-                    // Vietnamese lowercase already handled in lower_message
-                    std::string normalized_message = lower_message;
-                    
-                    // Try each keyword separated by comma or semicolon
-                    size_t pos = 0;
-                    while (pos < kw_str.length()) {
-                        // Find next delimiter (comma, semicolon) or end of string
-                        size_t delim_pos = kw_str.find_first_of(",;", pos);
-                        if (delim_pos == std::string::npos) delim_pos = kw_str.length();
-                        
-                        // Extract single keyword
-                        std::string single_kw = kw_str.substr(pos, delim_pos - pos);
-                        
-                        // Trim whitespace
-                        while (!single_kw.empty() && single_kw.front() == ' ') single_kw.erase(0, 1);
-                        while (!single_kw.empty() && single_kw.back() == ' ') single_kw.pop_back();
-                        
-                        if (!single_kw.empty()) {
-                            // Convert to lowercase for comparison (works with UTF-8/Vietnamese)
-                            std::string kw_lower = single_kw;
-                            std::transform(kw_lower.begin(), kw_lower.end(), kw_lower.begin(), ::tolower);
-                            
-                            // Log for debugging Vietnamese keywords
-                            ESP_LOGI(TAG, "🔍 Checking keyword: '%s' -> lowercase: '%s'", single_kw.c_str(), kw_lower.c_str());
-                            
-                            // Check if keyword exists in message (case insensitive)
-                            if (normalized_message.find(kw_lower) != std::string::npos) {
-                                ESP_LOGI(TAG, "🍕 Detected keyword '%s' in message", single_kw.c_str());
-                                keyword_found = true;
-                                break;
-                            }
+                    for (const auto& kw : cached_keywords_) {
+                        // Direct find on lower_message (same pattern as shoot command)
+                        // Both STT message and saved keywords are UTF-8 Vietnamese
+                        if (lower_message.find(kw) != std::string::npos) {
+                            ESP_LOGI(TAG, "🍕 Detected keyword '%s' in message", kw.c_str());
+                            keyword_found = true;
+                            matched_kw = kw;
+                            break;
                         }
-                        
-                        pos = delim_pos + 1;
+                        // Also try matching against original message (case-sensitive fallback)
+                        if (message.find(kw) != std::string::npos) {
+                            ESP_LOGI(TAG, "🍕 Detected keyword '%s' in original message", kw.c_str());
+                            keyword_found = true;
+                            matched_kw = kw;
+                            break;
+                        }
                     }
                     
                     if (keyword_found) {
-                        ESP_LOGI(TAG, "🍕 Keyword matched! emoji='%s', action_slot=%d", delicious_emoji, kw_action_slot);
+                        ESP_LOGI(TAG, "🍕 Keyword matched! kw='%s', emoji='%s', pose='%s', action_slot=%d", 
+                                 matched_kw.c_str(), cached_emoji_.c_str(), cached_pose_.c_str(), cached_action_slot_);
                         force_delicious_emoji_.store(true);
                         
-                        // Set custom emoji (use the one from NVS, not hardcoded "delicious")
+                        // Set custom emoji immediately
                         auto display = Board::GetInstance().GetDisplay();
-                        if (display && strlen(delicious_emoji) > 0) {
-                            display->SetEmotion(delicious_emoji);
-                            ESP_LOGI(TAG, "✅ Set '%s' emoji for custom keyword", delicious_emoji);
+                        if (display && !cached_emoji_.empty()) {
+                            display->SetEmotion(cached_emoji_.c_str());
+                            ESP_LOGI(TAG, "✅ Set '%s' emoji for custom keyword", cached_emoji_.c_str());
                         }
                         
-                        // Execute saved action slot if configured (1-3)
-                        if (kw_action_slot >= 1 && kw_action_slot <= 3) {
-                            ESP_LOGI(TAG, "🎭 Executing action slot %d for keyword", kw_action_slot);
-                            int actions_played = otto_play_memory_slot(kw_action_slot);
-                            ESP_LOGI(TAG, "✅ Played %d actions from slot %d", actions_played, kw_action_slot);
+                        // Execute pose action if configured (map pose name → ACTION_DOG_*)
+                        if (!cached_pose_.empty() && cached_pose_ != "none") {
+                            int pose_action = -1;
+                            if (cached_pose_ == "sit") pose_action = ACTION_DOG_SIT_DOWN;
+                            else if (cached_pose_ == "wave") pose_action = ACTION_DOG_WAVE_RIGHT_FOOT;
+                            else if (cached_pose_ == "bow") pose_action = ACTION_DOG_BOW;
+                            else if (cached_pose_ == "stretch") pose_action = ACTION_DOG_STRETCH;
+                            else if (cached_pose_ == "swing") pose_action = ACTION_DOG_SWING;
+                            else if (cached_pose_ == "dance") pose_action = ACTION_DOG_DANCE;
+                            
+                            if (pose_action >= 0) {
+                                ESP_LOGI(TAG, "🐕 Executing pose '%s' (action=%d) for keyword", cached_pose_.c_str(), pose_action);
+                                otto_controller_queue_action(pose_action, 1, 1500, 0, 0);
+                                ESP_LOGI(TAG, "✅ Pose '%s' queued successfully", cached_pose_.c_str());
+                            }
+                        }
+                        
+                        // Also execute saved memory slot if configured (1-3)
+                        if (cached_action_slot_ >= 1 && cached_action_slot_ <= 3) {
+                            ESP_LOGI(TAG, "🎭 Executing action slot %d for keyword", cached_action_slot_);
+                            int actions_played = otto_play_memory_slot(cached_action_slot_);
+                            ESP_LOGI(TAG, "✅ Played %d actions from slot %d", actions_played, cached_action_slot_);
                         }
                     }
                 }
@@ -1075,6 +1108,126 @@ void Application::Start() {
                 music_action = "volume_down";
             }
             
+            // ========== PLAY SPECIFIC SONG IMMEDIATELY ==========
+            // Detect "bật bài X", "nghe bài X", "phát bài X", "play X" and play immediately
+            std::string song_to_play = "";
+            
+            // Vietnamese patterns: bật bài, nghe bài, phát bài, mở bài, chơi bài
+            // Also: bật, phát, nghe, mở (without "bài") for simpler commands
+            std::vector<std::string> vn_patterns = {
+                // Full patterns with "bài"
+                "bật bài ", "bat bai ", "nghe bài ", "nghe bai ", 
+                "phát bài ", "phat bai ", "mở bài ", "mo bai ",
+                "chơi bài ", "choi bai ", "cho nghe ", "cho tui nghe ",
+                "cho tôi nghe ", "bật nhạc ", "bat nhac ", "nghe nhạc ",
+                "nghe nhac ", "phát nhạc ", "phat nhac ",
+                // Short patterns without "bài" - for "phát sóng gió", "bật lạc trôi"
+                "phát ", "phat ", "bật ", "bat ", "nghe ", "mở ", "mo "
+            };
+            
+            // English patterns
+            std::vector<std::string> en_patterns = {
+                "play ", "play song ", "play the song "
+            };
+            
+            // Check Vietnamese patterns
+            for (const auto& pattern : vn_patterns) {
+                size_t pos = lower_message.find(pattern);
+                if (pos != std::string::npos) {
+                    // Extract song name after the pattern
+                    song_to_play = message.substr(pos + pattern.length());
+                    // Trim whitespace
+                    size_t start = song_to_play.find_first_not_of(" \t\n\r");
+                    size_t end = song_to_play.find_last_not_of(" \t\n\r");
+                    if (start != std::string::npos && end != std::string::npos) {
+                        song_to_play = song_to_play.substr(start, end - start + 1);
+                    }
+                    break;
+                }
+            }
+            
+            // Check English patterns if no Vietnamese match
+            if (song_to_play.empty()) {
+                for (const auto& pattern : en_patterns) {
+                    size_t pos = lower_message.find(pattern);
+                    if (pos != std::string::npos) {
+                        song_to_play = message.substr(pos + pattern.length());
+                        size_t start = song_to_play.find_first_not_of(" \t\n\r");
+                        size_t end = song_to_play.find_last_not_of(" \t\n\r");
+                        if (start != std::string::npos && end != std::string::npos) {
+                            song_to_play = song_to_play.substr(start, end - start + 1);
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // If we found a song to play, play it immediately without asking LLM
+            // Filter out control keywords that are not song names
+            std::vector<std::string> control_keywords = {
+                "nhạc", "nhac", "tiếp", "tiep", "lại", "lai", "dừng", "dung", 
+                "tạm", "tam", "stop", "pause", "next", "previous", "skip",
+                "âm lượng", "am luong", "volume", "tăng", "tang", "giảm", "giam"
+            };
+            bool is_control_keyword = false;
+            std::string lower_song = song_to_play;
+            std::transform(lower_song.begin(), lower_song.end(), lower_song.begin(), ::tolower);
+            for (const auto& keyword : control_keywords) {
+                if (lower_song == keyword || lower_song.find(keyword) == 0) {
+                    is_control_keyword = true;
+                    break;
+                }
+            }
+            
+            if (!song_to_play.empty() && song_to_play.length() > 1 && !is_control_keyword) {
+                ESP_LOGI(TAG, "🎵 Direct play request detected: '%s'", song_to_play.c_str());
+                
+                // Play music directly using Board's Music
+                auto music = Board::GetInstance().GetMusic();
+                if (music) {
+                    // IMPORTANT: Abort any TTS that might come from server
+                    // Set flag to ignore incoming TTS responses for this session
+                    AbortSpeaking(kAbortReasonNone);
+                    
+                    // Set device to IDLE state immediately when music starts
+                    SetDeviceState(kDeviceStateIdle);
+                    
+                    // Show notification on display
+                    auto display = Board::GetInstance().GetDisplay();
+                    if (display) {
+                        display->SetChatMessage("assistant", ("🎵 Đang phát: " + song_to_play).c_str());
+                    }
+                    
+                    // Play the song directly - no need to ask LLM  
+                    // Note: Download() will automatically disable wake word to free SRAM
+                    std::string song_copy = song_to_play;
+                    Schedule([this, song_copy]() {
+                        auto m = Board::GetInstance().GetMusic();
+                        if (m) {
+                            // 🎵 Kiểm tra xem nhạc đã đang tải/phát chưa
+                            if (m->IsPreparing() || m->IsDownloading() || m->IsPlaying()) {
+                                ESP_LOGI(TAG, "🎵 Music already %s, skipping direct play", 
+                                         m->IsPlaying() ? "playing" : 
+                                         m->IsDownloading() ? "downloading" : "preparing");
+                                return;
+                            }
+                            // Abort speaking again in case TTS started
+                            AbortSpeaking(kAbortReasonNone);
+                            ESP_LOGI(TAG, "🎵 Starting direct playback: %s", song_copy.c_str());
+                            m->Download(song_copy, "");
+                        }
+                    });
+                    
+                    // DO NOT send anything to server - play music locally only
+                    // This prevents LLM from responding with TTS which conflicts with music
+                    ESP_LOGI(TAG, "🎵 Skipping LLM - playing music directly");
+                    
+                    // Return immediately - root is const, don't delete it
+                    return;
+                }
+            }
+            // ========== END PLAY SPECIFIC SONG ==========
+            
             // If music control command detected, send signal to server
             if (!music_action.empty()) {
                 ESP_LOGI(TAG, "🎵 Detected music control command: '%s' -> action: %s", message.c_str(), music_action.c_str());
@@ -1122,6 +1275,28 @@ void Application::Start() {
                 display->SetChatMessage("user", message.c_str());
             });
         } else if (strcmp(type->valuestring, "llm") == 0) {
+            // 🎵 LOGIC QUAN TRỌNG: Block LLM khi nhạc đang tải hoặc đang buffer
+            //
+            // Khi nhạc đang tải (IsPreparing) hoặc đang buffer (IsDownloading):
+            //   - User ĐÃ CHỌN BÀI → không cần AI phản hồi thêm
+            //   - LLM emotion (😊, 😔) THỪA THÃI → user đang chờ nhạc
+            //   - SSL CẦN SRAM → LLM processing chiếm SRAM
+            //   - Device NÊN IM LẶNG → về IDLE ngay để stream nhạc
+            //   - Sau khi MCP trả kết quả, LLM có thể gửi thêm text/emotion
+            //     nhưng user không cần → block luôn
+            //
+            // Khi nhạc ĐÃ PHÁT (IsPlaying) mà KHÔNG còn downloading:
+            //   - CHO PHÉP LLM → nếu user hỏi gì thì vẫn trả lời
+            //   - Music sẽ TỰ PAUSE trong PlayAudioStream loop
+            auto music = Board::GetInstance().GetMusic();
+            if (music && (music->IsPreparing() || music->IsDownloading())) {
+                ESP_LOGI(TAG, "🎵 Music is %s - user đã chọn bài, LLM về chế độ chờ, bỏ qua LLM message",
+                         music->IsPreparing() ? "preparing" : "downloading/buffering");
+                // Đảm bảo device ở IDLE state
+                Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+                return;
+            }
+            
             ESP_LOGI(TAG, "Processing LLM message from server");
             // Extract and display text from LLM message
             auto text = cJSON_GetObjectItem(root, "text");
@@ -1386,6 +1561,10 @@ void Application::OnWakeWordDetected() {
     }
 
     if (device_state_ == kDeviceStateIdle) {
+        // 🔊 Play activation sound IMMEDIATELY when wake word detected
+        // This gives user instant feedback regardless of server connection status
+        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+        
         audio_service_.EncodeWakeWord();
 
         if (!protocol_->IsAudioChannelOpened()) {
@@ -1398,21 +1577,8 @@ void Application::OnWakeWordDetected() {
 
         auto wake_word = audio_service_.GetLastWakeWord();
         ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
-#if CONFIG_SEND_WAKE_WORD_DATA
-        // Play the pop up sound to indicate the wake word is detected
-        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
-        // Encode and send the wake word data to the server
-        while (auto packet = audio_service_.PopWakeWordPacket()) {
-            protocol_->SendAudio(std::move(packet));
-        }
-        // Set the chat state to wake word detected
-        protocol_->SendWakeWordDetected(wake_word);
+        
         SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-#else
-        SetListeningMode(aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime);
-        // Play the pop up sound to indicate the wake word is detected
-        audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
-#endif
     } else if (device_state_ == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
     } else if (device_state_ == kDeviceStateActivating) {
@@ -1429,6 +1595,12 @@ void Application::AbortSpeaking(AbortReason reason) {
 }
 
 void Application::SetListeningMode(ListeningMode mode) {
+    // Don't go to Listening if music is playing - stay in IDLE
+    auto music = Board::GetInstance().GetMusic();
+    if (music && music->IsPlaying()) {
+        ESP_LOGI(TAG, "🎵 Music is playing, ignoring SetListeningMode request");
+        return;
+    }
     listening_mode_ = mode;
     SetDeviceState(kDeviceStateListening);
 }
@@ -1450,6 +1622,21 @@ void Application::SetDeviceState(DeviceState state) {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+    
+    // 🎵 Học từ Maggotxy: Khi chuyển TỪ IDLE sang state khác → stop nhạc
+    // Trừ khi đang bị suppress (music đang cố gắng force IDLE)
+    if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle) {
+        if (!audio_stop_suppressed_.load()) {
+            auto music = board.GetMusic();
+            if (music && music->IsPlaying()) {
+                ESP_LOGI(TAG, "🎵 Stopping music due to state change: IDLE -> %s", STATE_STRINGS[state]);
+                music->StopStreaming(false);  // Don't send notification, just stop
+            }
+        } else {
+            ESP_LOGI(TAG, "🎵 Music stop suppressed, not stopping music");
+        }
+    }
+    
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
@@ -1621,6 +1808,77 @@ bool Application::CanEnterSleepMode() {
 
     // Now it is safe to enter sleep mode
     return true;
+}
+
+void Application::ReloadCustomKeywords() {
+    cached_keywords_.clear();
+    cached_emoji_ = "delicious";
+    cached_pose_ = "none";
+    cached_action_slot_ = 0;
+    keywords_loaded_ = true;
+    
+    nvs_handle_t nvs_handle;
+    char kw_buf[128] = "";
+    char emo_buf[32] = "delicious";
+    char pose_buf[32] = "none";
+    
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "No custom keywords in NVS");
+        return;
+    }
+    
+    size_t kw_len = sizeof(kw_buf);
+    size_t emo_len = sizeof(emo_buf);
+    size_t pose_len = sizeof(pose_buf);
+    nvs_get_str(nvs_handle, "delicious_kw", kw_buf, &kw_len);
+    nvs_get_str(nvs_handle, "delicious_emo", emo_buf, &emo_len);
+    nvs_get_str(nvs_handle, "delicious_pose", pose_buf, &pose_len);
+    nvs_get_i8(nvs_handle, "kw_action_slot", &cached_action_slot_);
+    nvs_close(nvs_handle);
+    
+    cached_emoji_ = emo_buf;
+    cached_pose_ = pose_buf;
+    
+    if (strlen(kw_buf) == 0) {
+        ESP_LOGI(TAG, "📋 No custom keywords configured");
+        return;
+    }
+    
+    // Pre-split keywords by comma/semicolon and trim whitespace
+    // Store both original and lowercase (ASCII-only lowercase) for matching
+    std::string kw_str = kw_buf;
+    size_t pos = 0;
+    while (pos < kw_str.length()) {
+        size_t delim_pos = kw_str.find_first_of(",;", pos);
+        if (delim_pos == std::string::npos) delim_pos = kw_str.length();
+        
+        std::string single_kw = kw_str.substr(pos, delim_pos - pos);
+        
+        // Trim whitespace
+        while (!single_kw.empty() && single_kw.front() == ' ') single_kw.erase(0, 1);
+        while (!single_kw.empty() && single_kw.back() == ' ') single_kw.pop_back();
+        
+        if (!single_kw.empty()) {
+            // Store original keyword (Vietnamese UTF-8 works directly)
+            cached_keywords_.push_back(single_kw);
+            
+            // Also store ASCII-lowercased version if different
+            std::string kw_lower = single_kw;
+            std::transform(kw_lower.begin(), kw_lower.end(), kw_lower.begin(), ::tolower);
+            if (kw_lower != single_kw) {
+                cached_keywords_.push_back(kw_lower);
+            }
+        }
+        
+        pos = delim_pos + 1;
+    }
+    
+    ESP_LOGI(TAG, "📋 Loaded %d keyword variants, emoji='%s', pose='%s', action_slot=%d", 
+             (int)cached_keywords_.size(), cached_emoji_.c_str(), cached_pose_.c_str(), cached_action_slot_);
+    for (const auto& kw : cached_keywords_) {
+        ESP_LOGI(TAG, "  🔑 Keyword: '%s'", kw.c_str());
+    }
 }
 
 void Application::SendMcpMessage(const std::string& payload) {

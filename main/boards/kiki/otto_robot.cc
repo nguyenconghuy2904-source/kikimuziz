@@ -8,6 +8,8 @@
 #include <esp_random.h>
 #include <nvs_flash.h>
 #include <wifi_station.h>
+#include <cstring>
+#include <string>
 
 #include "application.h"
 #include "codecs/no_audio_codec.h"
@@ -211,11 +213,11 @@ private:
             panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
             DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
         
-        // Start with Otto GIF mode, show happy emoji by default
+        // Show happy emoji on boot (emoji mode is already loaded from NVS in constructor)
         if (display_) {
-            static_cast<OttoEmojiDisplay*>(display_)->SetEmojiMode(true);
             display_->SetEmotion("happy");  // Welcoming expression
-            ESP_LOGI(TAG, "🤖 Otto GIF mode enabled with happy emoji");
+            auto otto_display = static_cast<OttoEmojiDisplay*>(display_);
+            ESP_LOGI(TAG, "🤖 Emoji mode: %s (loaded from NVS)", otto_display->IsUsingOttoEmoji() ? "Otto GIF" : "Twemoji");
         }
     }
 
@@ -634,19 +636,33 @@ extern "C" {
         }
     }
     
-    bool otto_music_get_status(bool* playing, size_t* buffer_size, char* song, int song_len) {
+    bool otto_music_get_status(bool* playing, size_t* buffer_size, char* song, int song_len, 
+                               char* artist, int artist_len, char* thumbnail, int thumb_len) {
         if (!s_music_player) {
             if (playing) *playing = false;
             if (buffer_size) *buffer_size = 0;
             if (song && song_len > 0) song[0] = '\0';
+            if (artist && artist_len > 0) artist[0] = '\0';
+            if (thumbnail && thumb_len > 0) thumbnail[0] = '\0';
             return false;
         }
         
         if (playing) *playing = s_music_player->IsPlaying();
         if (buffer_size) *buffer_size = s_music_player->GetBufferSize();
         if (song && song_len > 0) {
-            // Note: current song name would need to be tracked separately
-            song[0] = '\0';
+            std::string song_name = s_music_player->GetCurrentSongName();
+            strncpy(song, song_name.c_str(), song_len - 1);
+            song[song_len - 1] = '\0';
+        }
+        if (artist && artist_len > 0) {
+            std::string artist_name = s_music_player->GetCurrentArtist();
+            strncpy(artist, artist_name.c_str(), artist_len - 1);
+            artist[artist_len - 1] = '\0';
+        }
+        if (thumbnail && thumb_len > 0) {
+            std::string thumb_url = s_music_player->GetCurrentThumbnail();
+            strncpy(thumbnail, thumb_url.c_str(), thumb_len - 1);
+            thumbnail[thumb_len - 1] = '\0';
         }
         return true;
     }

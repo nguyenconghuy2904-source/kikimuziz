@@ -1,5 +1,6 @@
 #include "otto_emoji_display.h"
 #include "lvgl_theme.h"
+#include "settings.h"
 
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -68,7 +69,7 @@ OttoEmojiDisplay::OttoEmojiDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_p
                                    bool mirror_y, bool swap_xy)
     : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy),
       emotion_gif_(nullptr), 
-      use_otto_emoji_(true),  // Start with Otto GIF mode by default
+      use_otto_emoji_(true),  // Default, will be overridden by NVS below
       drawing_canvas_(nullptr),
       drawing_canvas_buf_(nullptr),
       drawing_canvas_enabled_(false),
@@ -95,6 +96,14 @@ OttoEmojiDisplay::OttoEmojiDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_p
         ESP_LOGE(TAG, "❌ Failed to create auto-off timer: %s", esp_err_to_name(err));
     }
     
+    // Load saved emoji mode from NVS
+    {
+        Settings emoji_settings("display", false);
+        int saved_mode = emoji_settings.GetInt("emoji_mode", 1); // 1 = Otto GIF (default)
+        use_otto_emoji_ = (saved_mode != 0);
+        ESP_LOGI(TAG, "📋 Loaded emoji mode from NVS: %s", use_otto_emoji_ ? "Otto GIF" : "Twemoji");
+    }
+
     SetupGifContainer();
 };
 
@@ -431,6 +440,13 @@ void OttoEmojiDisplay::SetEmojiMode(bool use_otto_emoji) {
     }
     
     use_otto_emoji_ = use_otto_emoji;
+    
+    // Save emoji mode to NVS
+    {
+        Settings emoji_settings("display", true);
+        emoji_settings.SetInt("emoji_mode", use_otto_emoji ? 1 : 0);
+        ESP_LOGI(TAG, "💾 Saved emoji mode to NVS: %s", use_otto_emoji ? "Otto GIF" : "Twemoji");
+    }
     
     if (use_otto_emoji_) {
         // 切换到Otto emoji模式

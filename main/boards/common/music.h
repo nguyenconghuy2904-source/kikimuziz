@@ -57,6 +57,7 @@ public:
     // State
     virtual bool IsPlaying() const = 0;
     virtual bool IsDownloading() const { return false; }
+    virtual bool IsPreparing() const { return false; }  // True when preparing to download (before SSL handshake)
     
     // Buffer info for FFT visualization
     virtual size_t GetBufferSize() const { return 0; }

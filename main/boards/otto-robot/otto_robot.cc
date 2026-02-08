@@ -107,11 +107,11 @@ private:
             panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
             DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
         
-        // Start with Otto GIF mode, show happy emoji by default
+        // Show happy emoji on boot (emoji mode is already loaded from NVS in constructor)
         if (display_) {
-            static_cast<OttoEmojiDisplay*>(display_)->SetEmojiMode(true);
             display_->SetEmotion("happy");  // Welcoming expression
-            ESP_LOGI(TAG, "🤖 Otto GIF mode enabled with happy emoji");
+            auto otto_display = static_cast<OttoEmojiDisplay*>(display_);
+            ESP_LOGI(TAG, "🤖 Emoji mode: %s (loaded from NVS)", otto_display->IsUsingOttoEmoji() ? "Otto GIF" : "Twemoji");
         }
     }
 

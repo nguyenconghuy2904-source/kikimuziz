@@ -259,6 +259,15 @@ std::string WifiBoard::GetDeviceStatusJson() {
         cJSON_AddItemToObject(root, "chip", chip);
     }
 
+    // Music status - Để LLM biết nhạc đang phát
+    auto music_player = board.GetMusic();
+    if (music_player) {
+        auto music = cJSON_CreateObject();
+        cJSON_AddBoolToObject(music, "is_playing", music_player->IsPlaying());
+        cJSON_AddBoolToObject(music, "is_buffering", music_player->IsDownloading() && !music_player->IsPlaying());
+        cJSON_AddItemToObject(root, "music", music);
+    }
+
     auto json_str = cJSON_PrintUnformatted(root);
     std::string json(json_str);
     cJSON_free(json_str);

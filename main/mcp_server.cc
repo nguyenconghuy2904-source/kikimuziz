@@ -52,54 +52,69 @@ void McpServer::AddCommonTools() {
             return board.GetDeviceStatusJson();
         });
 
-    AddTool("self.audio_speaker.set_volume", 
-        "Set the volume of the audio speaker. If the current volume is unknown, you must call `self.get_device_status` tool first and then call this tool.",
-        PropertyList({
-            Property("volume", kPropertyTypeInteger, 0, 100)
-        }), 
-        [&board](const PropertyList& properties) -> ReturnValue {
-            auto codec = board.GetAudioCodec();
-            codec->SetOutputVolume(properties["volume"].value<int>());
-            return true;
-        });
-    
+    // 🔧 CONSOLIDATED TOOL: Device control (volume + brightness + theme)
     auto backlight = board.GetBacklight();
-    if (backlight) {
-        AddTool("self.screen.set_brightness",
-            "Set the brightness of the screen.",
-            PropertyList({
-                Property("brightness", kPropertyTypeInteger, 0, 100)
-            }),
-            [backlight](const PropertyList& properties) -> ReturnValue {
-                uint8_t brightness = static_cast<uint8_t>(properties["brightness"].value<int>());
-                backlight->SetBrightness(brightness, true);
-                return true;
-            });
-    }
-
 #ifdef HAVE_LVGL
     auto display = board.GetDisplay();
-    if (display && display->GetTheme() != nullptr) {
-        AddTool("self.screen.set_theme",
-            "Set the theme of the screen. The theme can be `light` or `dark`.",
-            PropertyList({
-                Property("theme", kPropertyTypeString)
-            }),
-            [display](const PropertyList& properties) -> ReturnValue {
-                auto theme_name = properties["theme"].value<std::string>();
-                auto& theme_manager = LvglThemeManager::GetInstance();
-                auto theme = theme_manager.GetTheme(theme_name);
-                if (theme != nullptr) {
-                    display->SetTheme(theme);
-                    return true;
+#endif
+    AddTool("self.device",
+        "设备控制工具。支持设置音量、亮度、主题。\n"
+        "Args:\n"
+        "  action: 'volume'(音量0-100), 'brightness'(亮度0-100), 'theme'(主题light/dark)\n"
+        "  value: 数值或字符串",
+        PropertyList({
+            Property("action", kPropertyTypeString),
+            Property("value", kPropertyTypeString, "")
+        }),
+        [&board, backlight
+#ifdef HAVE_LVGL
+        , display
+#endif
+        ](const PropertyList& properties) -> ReturnValue {
+            auto action = properties["action"].value<std::string>();
+            auto value_str = properties["value"].value<std::string>();
+            
+            if (action == "volume") {
+                int volume = std::stoi(value_str);
+                if (volume < 0 || volume > 100) {
+                    return "{\"success\": false, \"message\": \"音量范围0-100\"}";
                 }
-                return false;
-            });
-    }
+                auto codec = board.GetAudioCodec();
+                codec->SetOutputVolume(volume);
+                return "{\"success\": true}";
+            }
+            else if (action == "brightness") {
+                if (!backlight) {
+                    return "{\"success\": false, \"message\": \"设备无背光控制\"}";
+                }
+                int brightness = std::stoi(value_str);
+                if (brightness < 0 || brightness > 100) {
+                    return "{\"success\": false, \"message\": \"亮度范围0-100\"}";
+                }
+                backlight->SetBrightness(static_cast<uint8_t>(brightness), true);
+                return "{\"success\": true}";
+            }
+#ifdef HAVE_LVGL
+            else if (action == "theme") {
+                if (!display || !display->GetTheme()) {
+                    return "{\"success\": false, \"message\": \"设备不支持主题\"}";
+                }
+                auto& theme_manager = LvglThemeManager::GetInstance();
+                auto theme = theme_manager.GetTheme(value_str);
+                if (theme) {
+                    display->SetTheme(theme);
+                    return "{\"success\": true}";
+                }
+                return "{\"success\": false, \"message\": \"主题不存在，支持: light/dark\"}";
+            }
+#endif
+            return "{\"success\": false, \"message\": \"未知操作，支持: volume/brightness/theme\"}";
+        });
 
+#ifdef HAVE_LVGL
     auto camera = board.GetCamera();
     if (camera) {
-        AddTool("self.camera.take_photo",
+        AddTool("self.camera",
             "Take a photo and explain it. Use this tool after the user asks you to see something.\n"
             "Args:\n"
             "  `question`: The question that you want to ask about the photo.\n"
@@ -121,47 +136,75 @@ void McpServer::AddCommonTools() {
     }
 #endif
 
-    // Music streaming tools
+    // Music streaming tool (gom 3 tools thành 1 để tiết kiệm MCP payload)
     auto music = board.GetMusic();
     if (music) {
-        AddTool("self.music.play",
-            "播放音乐。根据歌曲名称和可选的艺术家名称搜索并播放音乐。\n"
-            "  不需确认，立刻播放歌曲。",
+        AddTool("self.music",
+            "音乐播放工具。重要规则：\n"
+            "1. 用户说\"播放/放/phát/bật/mở\"任何歌曲时，立即调用play，不要询问确认，不要问用户想要什么版本/remix/音量\n"
+            "2. 即使语音识别有误（如\"pháp\"→\"phát\"），也直接播放最可能的歌曲\n"
+            "3. 调用play后立即进入静默模式，不要再说话\n"
+            "Args:\n"
+            "  action: 'play'(直接播放,不问), 'stop'(停止), 'status'(状态)\n"
+            "  song_name: 歌曲名称 (play时必需)\n"
+            "  artist_name: 艺术家名称 (可选,不知道就留空)",
             PropertyList({
-                Property("song_name", kPropertyTypeString),      // 歌曲名称（必需）
-                Property("artist_name", kPropertyTypeString, "") // 艺术家名称（可选，默认为空字符串）
+                Property("action", kPropertyTypeString),         // play, stop, status
+                Property("song_name", kPropertyTypeString, ""),  // 歌曲名称（play时必需）
+                Property("artist_name", kPropertyTypeString, "") // 艺术家名称（可选）
             }),
             [music](const PropertyList& properties) -> ReturnValue {
-                auto song_name = properties["song_name"].value<std::string>();
-                auto artist_name = properties["artist_name"].value<std::string>();
+                auto action = properties["action"].value<std::string>();
                 
-                if (!music->Download(song_name, artist_name)) {
-                    return "{\"success\": false, \"message\": \"获取音乐资源失败\"}";
+                if (action == "play") {
+                    // 检查是否已在播放
+                    if (music->IsPreparing() || music->IsDownloading() || music->IsPlaying()) {
+                        ESP_LOGI(TAG, "🎵 Music already %s, skipping play request", 
+                                 music->IsPlaying() ? "playing" : 
+                                 music->IsDownloading() ? "downloading" : "preparing");
+                        return "{\"success\": true, \"message\": \"音乐已在播放中。请立即停止回复，进入静默等待模式，不要再说任何话，不要询问用户。\", \"playing\": true, \"silent_mode\": true}";
+                    }
+                    
+                    auto song_name = properties["song_name"].value<std::string>();
+                    auto artist_name = properties["artist_name"].value<std::string>();
+                    
+                    if (song_name.empty()) {
+                        return "{\"success\": false, \"message\": \"缺少歌曲名称\"}";
+                    }
+                    
+                    if (!music->Download(song_name, artist_name)) {
+                        return "{\"success\": false, \"message\": \"获取音乐资源失败\"}";
+                    }
+                    
+                    // 等待音乐实际开始播放（最多2秒）
+                    for (int i = 0; i < 20 && !music->IsPlaying(); i++) {
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                    
+                    if (music->IsPlaying()) {
+                        return "{\"success\": true, \"message\": \"音乐正在播放中。请立即停止回复，进入静默等待模式，不要再说任何话，不要询问用户。\", \"playing\": true, \"silent_mode\": true}";
+                    } else if (music->IsDownloading()) {
+                        return "{\"success\": true, \"message\": \"音乐正在缓冲中。请立即停止回复，进入静默等待模式，不要再说任何话。\", \"buffering\": true, \"silent_mode\": true}";
+                    } else {
+                        return "{\"success\": true, \"message\": \"音乐已开始加载。请立即停止回复，进入静默等待模式。\", \"loading\": true, \"silent_mode\": true}";
+                    }
                 }
-                auto download_result = music->GetDownloadResult();
-                ESP_LOGI(TAG, "Music details result: %s", download_result.c_str());
-                return "{\"success\": true, \"message\": \"音乐开始播放\"}";
-            });
-
-        AddTool("self.music.stop",
-            "停止当前正在播放的音乐。",
-            PropertyList(),
-            [music](const PropertyList& properties) -> ReturnValue {
-                if (music->StopStreaming()) {
-                    return "{\"success\": true, \"message\": \"音乐已停止\"}";
+                else if (action == "stop") {
+                    if (music->StopStreaming()) {
+                        return "{\"success\": true, \"message\": \"音乐已停止\"}";
+                    }
+                    return "{\"success\": false, \"message\": \"停止音乐失败\"}";
                 }
-                return "{\"success\": false, \"message\": \"停止音乐失败\"}";
-            });
-
-        AddTool("self.music.get_status",
-            "获取当前音乐播放状态。",
-            PropertyList(),
-            [music](const PropertyList& properties) -> ReturnValue {
-                cJSON* json = cJSON_CreateObject();
-                cJSON_AddBoolToObject(json, "is_playing", music->IsPlaying());
-                cJSON_AddBoolToObject(json, "is_downloading", music->IsDownloading());
-                cJSON_AddNumberToObject(json, "buffer_size", music->GetBufferSize());
-                return json;
+                else if (action == "status") {
+                    cJSON* json = cJSON_CreateObject();
+                    cJSON_AddBoolToObject(json, "is_playing", music->IsPlaying());
+                    cJSON_AddBoolToObject(json, "is_downloading", music->IsDownloading());
+                    cJSON_AddNumberToObject(json, "buffer_size", music->GetBufferSize());
+                    return json;
+                }
+                else {
+                    return "{\"success\": false, \"message\": \"未知操作，支持: play/stop/status\"}";
+                }
             });
     }
 
@@ -170,180 +213,175 @@ void McpServer::AddCommonTools() {
 }
 
 void McpServer::AddUserOnlyTools() {
-    // System tools
-    AddUserOnlyTool("self.get_system_info",
-        "Get the system information",
-        PropertyList(),
-        [this](const PropertyList& properties) -> ReturnValue {
-            auto& board = Board::GetInstance();
-            return board.GetSystemInfoJson();
-        });
-
-    AddUserOnlyTool("self.reboot", "Reboot the system",
-        PropertyList(),
-        [this](const PropertyList& properties) -> ReturnValue {
-            auto& app = Application::GetInstance();
-            app.Schedule([&app]() {
-                ESP_LOGW(TAG, "User requested reboot");
-                vTaskDelay(pdMS_TO_TICKS(1000));
-
-                app.Reboot();
-            });
-            return true;
-        });
-
-    // Firmware upgrade
-    AddUserOnlyTool("self.upgrade_firmware", "Upgrade firmware from a specific URL. This will download and install the firmware, then reboot the device.",
+    // 🔧 CONSOLIDATED TOOL: System control (info + reboot + upgrade + assets)
+    auto& assets = Assets::GetInstance();
+    AddUserOnlyTool("self.system",
+        "系统控制工具。\n"
+        "Args:\n"
+        "  action: 'info'(系统信息), 'reboot'(重启), 'upgrade'(升级固件), 'assets_url'(设置资源URL)\n"
+        "  url: 固件/资源URL (仅upgrade/assets_url时需要)",
         PropertyList({
-            Property("url", kPropertyTypeString, "The URL of the firmware binary file to download and install")
+            Property("action", kPropertyTypeString),
+            Property("url", kPropertyTypeString, "")
         }),
-        [this](const PropertyList& properties) -> ReturnValue {
+        [&assets](const PropertyList& properties) -> ReturnValue {
+            auto action = properties["action"].value<std::string>();
             auto url = properties["url"].value<std::string>();
-            ESP_LOGI(TAG, "User requested firmware upgrade from URL: %s", url.c_str());
             
-            auto& app = Application::GetInstance();
-            app.Schedule([url, &app]() {
-                auto ota = std::make_unique<Ota>();
-                
-                bool success = app.UpgradeFirmware(*ota, url);
-                if (!success) {
-                    ESP_LOGE(TAG, "Firmware upgrade failed");
+            if (action == "info") {
+                return Board::GetInstance().GetSystemInfoJson();
+            }
+            else if (action == "reboot") {
+                auto& app = Application::GetInstance();
+                app.Schedule([&app]() {
+                    ESP_LOGW(TAG, "User requested reboot");
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    app.Reboot();
+                });
+                return "{\"success\": true, \"message\": \"正在重启...\"}";
+            }
+            else if (action == "upgrade") {
+                if (url.empty()) {
+                    return "{\"success\": false, \"message\": \"缺少固件URL\"}";
                 }
-            });
-            
-            return true;
+                ESP_LOGI(TAG, "User requested firmware upgrade from URL: %s", url.c_str());
+                auto& app = Application::GetInstance();
+                app.Schedule([url, &app]() {
+                    auto ota = std::make_unique<Ota>();
+                    bool success = app.UpgradeFirmware(*ota, url);
+                    if (!success) {
+                        ESP_LOGE(TAG, "Firmware upgrade failed");
+                    }
+                });
+                return "{\"success\": true, \"message\": \"开始升级固件...\"}";
+            }
+            else if (action == "assets_url") {
+                if (!assets.partition_valid()) {
+                    return "{\"success\": false, \"message\": \"资源分区无效\"}";
+                }
+                if (url.empty()) {
+                    return "{\"success\": false, \"message\": \"缺少资源URL\"}";
+                }
+                Settings settings("assets", true);
+                settings.SetString("download_url", url);
+                return "{\"success\": true}";
+            }
+            return "{\"success\": false, \"message\": \"未知操作，支持: info/reboot/upgrade/assets_url\"}";
         });
 
-    // Display control
+    // 🔧 CONSOLIDATED TOOL: Screen control (info + snapshot + preview)
 #ifdef HAVE_LVGL
     auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
     if (display) {
-        AddUserOnlyTool("self.screen.get_info", "Information about the screen, including width, height, etc.",
-            PropertyList(),
+        AddUserOnlyTool("self.screen",
+            "屏幕控制工具。\n"
+            "Args:\n"
+            "  action: 'info'(屏幕信息), 'snapshot'(截图上传), 'preview'(预览图片)\n"
+            "  url: 上传/下载URL (snapshot/preview时需要)\n"
+            "  quality: JPEG质量1-100 (仅snapshot，默认80)",
+            PropertyList({
+                Property("action", kPropertyTypeString),
+                Property("url", kPropertyTypeString, ""),
+                Property("quality", kPropertyTypeString, "80")
+            }),
             [display](const PropertyList& properties) -> ReturnValue {
-                cJSON *json = cJSON_CreateObject();
-                cJSON_AddNumberToObject(json, "width", display->width());
-                cJSON_AddNumberToObject(json, "height", display->height());
-                if (dynamic_cast<OledDisplay*>(display)) {
-                    cJSON_AddBoolToObject(json, "monochrome", true);
-                } else {
-                    cJSON_AddBoolToObject(json, "monochrome", false);
+                auto action = properties["action"].value<std::string>();
+                auto url = properties["url"].value<std::string>();
+                
+                if (action == "info") {
+                    cJSON *json = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(json, "width", display->width());
+                    cJSON_AddNumberToObject(json, "height", display->height());
+                    if (dynamic_cast<OledDisplay*>(display)) {
+                        cJSON_AddBoolToObject(json, "monochrome", true);
+                    } else {
+                        cJSON_AddBoolToObject(json, "monochrome", false);
+                    }
+                    return json;
                 }
-                return json;
-            });
-
 #if CONFIG_LV_USE_SNAPSHOT
-        AddUserOnlyTool("self.screen.snapshot", "Snapshot the screen and upload it to a specific URL",
-            PropertyList({
-                Property("url", kPropertyTypeString),
-                Property("quality", kPropertyTypeInteger, 80, 1, 100)
-            }),
-            [display](const PropertyList& properties) -> ReturnValue {
-                auto url = properties["url"].value<std::string>();
-                auto quality = properties["quality"].value<int>();
-
-                std::string jpeg_data;
-                if (!display->SnapshotToJpeg(jpeg_data, quality)) {
-                    throw std::runtime_error("Failed to snapshot screen");
-                }
-
-                ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_data.size(), url.c_str());
-                
-                // 构造multipart/form-data请求体
-                std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
-                
-                auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
-                http->SetHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
-                if (!http->Open("POST", url)) {
-                    throw std::runtime_error("Failed to open URL: " + url);
-                }
-                {
-                    // 文件字段头部
-                    std::string file_header;
-                    file_header += "--" + boundary + "\r\n";
-                    file_header += "Content-Disposition: form-data; name=\"file\"; filename=\"screenshot.jpg\"\r\n";
-                    file_header += "Content-Type: image/jpeg\r\n";
-                    file_header += "\r\n";
-                    http->Write(file_header.c_str(), file_header.size());
-                }
-
-                // JPEG数据
-                http->Write((const char*)jpeg_data.data(), jpeg_data.size());
-
-                {
-                    // multipart尾部
-                    std::string multipart_footer;
-                    multipart_footer += "\r\n--" + boundary + "--\r\n";
-                    http->Write(multipart_footer.c_str(), multipart_footer.size());
-                }
-                http->Write("", 0);
-
-                if (http->GetStatusCode() != 200) {
-                    throw std::runtime_error("Unexpected status code: " + std::to_string(http->GetStatusCode()));
-                }
-                std::string result = http->ReadAll();
-                http->Close();
-                ESP_LOGI(TAG, "Snapshot screen result: %s", result.c_str());
-                return true;
-            });
-        
-        AddUserOnlyTool("self.screen.preview_image", "Preview an image on the screen",
-            PropertyList({
-                Property("url", kPropertyTypeString)
-            }),
-            [display](const PropertyList& properties) -> ReturnValue {
-                auto url = properties["url"].value<std::string>();
-                auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
-
-                if (!http->Open("GET", url)) {
-                    throw std::runtime_error("Failed to open URL: " + url);
-                }
-                int status_code = http->GetStatusCode();
-                if (status_code != 200) {
-                    throw std::runtime_error("Unexpected status code: " + std::to_string(status_code));
-                }
-
-                size_t content_length = http->GetBodyLength();
-                char* data = (char*)heap_caps_malloc(content_length, MALLOC_CAP_8BIT);
-                if (data == nullptr) {
-                    throw std::runtime_error("Failed to allocate memory for image: " + url);
-                }
-                size_t total_read = 0;
-                while (total_read < content_length) {
-                    int ret = http->Read(data + total_read, content_length - total_read);
-                    if (ret < 0) {
-                        heap_caps_free(data);
-                        throw std::runtime_error("Failed to download image: " + url);
+                else if (action == "snapshot") {
+                    if (url.empty()) {
+                        return "{\"success\": false, \"message\": \"缺少上传URL\"}";
                     }
-                    if (ret == 0) {
-                        break;
+                    auto quality_str = properties["quality"].value<std::string>();
+                    int quality = std::stoi(quality_str);
+                    if (quality < 1 || quality > 100) quality = 80;
+                    
+                    std::string jpeg_data;
+                    if (!display->SnapshotToJpeg(jpeg_data, quality)) {
+                        throw std::runtime_error("Failed to snapshot screen");
                     }
-                    total_read += ret;
-                }
-                http->Close();
 
-                auto image = std::make_unique<LvglAllocatedImage>(data, content_length);
-                display->SetPreviewImage(std::move(image));
-                return true;
-            });
+                    ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_data.size(), url.c_str());
+                    
+                    std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
+                    auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
+                    http->SetHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+                    if (!http->Open("POST", url)) {
+                        throw std::runtime_error("Failed to open URL: " + url);
+                    }
+                    {
+                        std::string file_header;
+                        file_header += "--" + boundary + "\r\n";
+                        file_header += "Content-Disposition: form-data; name=\"file\"; filename=\"screenshot.jpg\"\r\n";
+                        file_header += "Content-Type: image/jpeg\r\n\r\n";
+                        http->Write(file_header.c_str(), file_header.size());
+                    }
+                    http->Write((const char*)jpeg_data.data(), jpeg_data.size());
+                    {
+                        std::string multipart_footer = "\r\n--" + boundary + "--\r\n";
+                        http->Write(multipart_footer.c_str(), multipart_footer.size());
+                    }
+                    http->Write("", 0);
+
+                    if (http->GetStatusCode() != 200) {
+                        throw std::runtime_error("Unexpected status code: " + std::to_string(http->GetStatusCode()));
+                    }
+                    std::string result = http->ReadAll();
+                    http->Close();
+                    ESP_LOGI(TAG, "Snapshot screen result: %s", result.c_str());
+                    return "{\"success\": true}";
+                }
+                else if (action == "preview") {
+                    if (url.empty()) {
+                        return "{\"success\": false, \"message\": \"缺少图片URL\"}";
+                    }
+                    auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
+                    if (!http->Open("GET", url)) {
+                        throw std::runtime_error("Failed to open URL: " + url);
+                    }
+                    int status_code = http->GetStatusCode();
+                    if (status_code != 200) {
+                        throw std::runtime_error("Unexpected status code: " + std::to_string(status_code));
+                    }
+
+                    size_t content_length = http->GetBodyLength();
+                    char* data = (char*)heap_caps_malloc(content_length, MALLOC_CAP_8BIT);
+                    if (data == nullptr) {
+                        throw std::runtime_error("Failed to allocate memory for image: " + url);
+                    }
+                    size_t total_read = 0;
+                    while (total_read < content_length) {
+                        int ret = http->Read(data + total_read, content_length - total_read);
+                        if (ret < 0) {
+                            heap_caps_free(data);
+                            throw std::runtime_error("Failed to download image: " + url);
+                        }
+                        if (ret == 0) break;
+                        total_read += ret;
+                    }
+                    http->Close();
+
+                    auto image = std::make_unique<LvglAllocatedImage>(data, content_length);
+                    display->SetPreviewImage(std::move(image));
+                    return "{\"success\": true}";
+                }
 #endif // CONFIG_LV_USE_SNAPSHOT
+                return "{\"success\": false, \"message\": \"未知操作，支持: info/snapshot/preview\"}";
+            });
     }
 #endif // HAVE_LVGL
-
-    // Assets download url
-    auto& assets = Assets::GetInstance();
-    if (assets.partition_valid()) {
-        AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
-            PropertyList({
-                Property("url", kPropertyTypeString)
-            }),
-            [](const PropertyList& properties) -> ReturnValue {
-                auto url = properties["url"].value<std::string>();
-                Settings settings("assets", true);
-                settings.SetString("download_url", url);
-                return true;
-            });
-    }
 }
 
 void McpServer::AddTool(McpTool* tool) {

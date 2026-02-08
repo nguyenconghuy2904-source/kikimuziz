@@ -6,11 +6,13 @@
 
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <font_awesome.h>
 #include <esp_log.h>
 #include <esp_err.h>
 #include <esp_lvgl_port.h>
 #include <esp_psram.h>
+#include <esp_heap_caps.h>
 #include <cstring>
 
 #include "board.h"
@@ -1269,5 +1271,425 @@ void LcdDisplay::SetHideSubtitle(bool hide) {
         } else {
             lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
         }
+    }
+}
+
+// ============================================================================
+// FFT Spectrum Visualization Implementation
+// ============================================================================
+
+void LcdDisplay::periodicUpdateTaskWrapper(void* arg) {
+    LcdDisplay* display = static_cast<LcdDisplay*>(arg);
+    display->periodicUpdateTask();
+}
+
+void LcdDisplay::periodicUpdateTask() {
+    ESP_LOGI(TAG, "FFT Task Started");
+    
+    const TickType_t displayInterval = pdMS_TO_TICKS(40);   // 25 FPS display
+    const TickType_t audioProcessInterval = pdMS_TO_TICKS(15); // Audio processing
+    
+    TickType_t lastDisplayTime = xTaskGetTickCount();
+    TickType_t lastAudioTime = xTaskGetTickCount();
+    
+    while (!fft_task_should_stop_) {
+        TickType_t currentTime = xTaskGetTickCount();
+        
+        // Process audio data at regular intervals
+        if (currentTime - lastAudioTime >= audioProcessInterval) {
+            if (final_pcm_data_fft_ != nullptr) {
+                processAudioData();
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            lastAudioTime = currentTime;
+        }
+        
+        // Display refresh
+        if (currentTime - lastDisplayTime >= displayInterval) {
+            if (fft_data_ready_) {
+                DisplayLockGuard lock(this);
+                drawSpectrum();
+                fft_data_ready_ = false;
+                lastDisplayTime = currentTime;
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    
+    ESP_LOGI(TAG, "FFT display task stopped");
+    fft_task_handle_ = nullptr;
+    vTaskDelete(NULL);
+}
+
+void LcdDisplay::processAudioData() {
+    if (final_pcm_data_fft_ == nullptr || audio_data_ == nullptr || frame_audio_data_ == nullptr) {
+        return;
+    }
+    
+    if (audio_display_last_update_ <= 2) {
+        memcpy(audio_data_, final_pcm_data_fft_, sizeof(int16_t) * 1152);
+        for (int i = 0; i < 1152; i++) {
+            frame_audio_data_[i] += audio_data_[i];
+        }
+        audio_display_last_update_++;
+    } else {
+        const int HOP_SIZE = LCD_FFT_SIZE;
+        const int NUM_SEGMENTS = 1 + (1152 - LCD_FFT_SIZE) / HOP_SIZE;
+        
+        // Reset power spectrum
+        memset(avg_power_spectrum_, 0, sizeof(avg_power_spectrum_));
+        
+        for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
+            int start = seg * HOP_SIZE;
+            if (start + LCD_FFT_SIZE > 1152) break;
+            
+            // Apply Hanning window
+            for (int i = 0; i < LCD_FFT_SIZE; i++) {
+                float sample = frame_audio_data_[start + i] / 32768.0f;
+                fft_real_[i] = sample * hanning_window_[i];
+                fft_imag_[i] = 0.0f;
+            }
+            
+            // Compute FFT
+            compute(fft_real_, fft_imag_, LCD_FFT_SIZE, true);
+            
+            // Accumulate power spectrum
+            for (int i = 0; i < LCD_FFT_SIZE / 2; i++) {
+                avg_power_spectrum_[i] += fft_real_[i] * fft_real_[i] + fft_imag_[i] * fft_imag_[i];
+            }
+        }
+        
+        // Average
+        for (int i = 0; i < LCD_FFT_SIZE / 2; i++) {
+            avg_power_spectrum_[i] /= NUM_SEGMENTS;
+        }
+        
+        audio_display_last_update_ = 0;
+        fft_data_ready_ = true;
+        memset(frame_audio_data_, 0, sizeof(int16_t) * 1152);
+    }
+}
+
+// Cooley-Tukey FFT
+void LcdDisplay::compute(float* real, float* imag, int n, bool forward) {
+    int j = 0;
+    for (int i = 0; i < n; i++) {
+        if (j > i) {
+            std::swap(real[i], real[j]);
+            std::swap(imag[i], imag[j]);
+        }
+        int m = n >> 1;
+        while (m >= 1 && j >= m) { j -= m; m >>= 1; }
+        j += m;
+    }
+    
+    for (int s = 1; s <= (int)log2(n); s++) {
+        int m = 1 << s;
+        int m2 = m >> 1;
+        float w_real = 1.0f, w_imag = 0.0f;
+        float angle = (forward ? -2.0f : 2.0f) * M_PI / m;
+        float wn_real = cosf(angle);
+        float wn_imag = sinf(angle);
+        
+        for (int k = 0; k < m2; k++) {
+            for (int i = k; i < n; i += m) {
+                int i2 = i + m2;
+                float t_real = w_real * real[i2] - w_imag * imag[i2];
+                float t_imag = w_real * imag[i2] + w_imag * real[i2];
+                real[i2] = real[i] - t_real;
+                imag[i2] = imag[i] - t_imag;
+                real[i] = real[i] + t_real;
+                imag[i] = imag[i] + t_imag;
+            }
+            float tmp = w_real * wn_real - w_imag * wn_imag;
+            w_imag = w_real * wn_imag + w_imag * wn_real;
+            w_real = tmp;
+        }
+    }
+}
+
+void LcdDisplay::create_fft_canvas() {
+    if (fft_canvas_ != nullptr) return;
+    
+    auto screen = lv_screen_active();
+    
+    // Calculate canvas dimensions
+    fft_canvas_width_ = width_;
+    fft_canvas_height_ = height_ / 3;  // Bottom 1/3 of screen
+    bar_max_height_ = fft_canvas_height_ - 4;
+    
+    // Allocate canvas buffer in PSRAM
+    size_t buf_size = fft_canvas_width_ * fft_canvas_height_ * sizeof(uint16_t);
+    fft_canvas_buffer_ = (uint16_t*)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    if (!fft_canvas_buffer_) {
+        ESP_LOGE(TAG, "Failed to allocate FFT canvas buffer");
+        return;
+    }
+    memset(fft_canvas_buffer_, 0, buf_size);
+    
+    // Create canvas
+    fft_canvas_ = lv_canvas_create(screen);
+    lv_canvas_set_buffer(fft_canvas_, fft_canvas_buffer_, fft_canvas_width_, fft_canvas_height_, LV_COLOR_FORMAT_RGB565);
+    lv_obj_align(fft_canvas_, LV_ALIGN_BOTTOM_MID, 0, 0);
+    
+    // Fill with black
+    lv_canvas_fill_bg(fft_canvas_, lv_color_black(), LV_OPA_COVER);
+    
+    ESP_LOGI(TAG, "FFT canvas created: %dx%d", fft_canvas_width_, fft_canvas_height_);
+}
+
+void LcdDisplay::drawSpectrum() {
+    if (fft_canvas_ == nullptr) return;
+    draw_spectrum(avg_power_spectrum_, LCD_FFT_SIZE / 2);
+}
+
+void LcdDisplay::draw_spectrum(float* power_spectrum, int fft_size) {
+    if (fft_canvas_ == nullptr || fft_canvas_buffer_ == nullptr) return;
+    
+    const int bartotal = BAR_COL_NUM;
+    const int bar_width = fft_canvas_width_ / bartotal;
+    int x_pos = 0;
+    int y_pos = fft_canvas_height_ - 1;
+    
+    float magnitude[BAR_COL_NUM] = {0};
+    float max_magnitude = 0;
+    
+    const float MIN_DB = -25.0f;
+    const float MAX_DB = 0.0f;
+    
+    // Calculate magnitude per bar
+    for (int bin = 0; bin < bartotal; bin++) {
+        int start = bin * (fft_size / bartotal);
+        int end = (bin + 1) * (fft_size / bartotal);
+        magnitude[bin] = 0;
+        int count = 0;
+        for (int k = start; k < end; k++) {
+            magnitude[bin] += sqrtf(power_spectrum[k]);
+            count++;
+        }
+        if (count > 0) {
+            magnitude[bin] /= count;
+        }
+        if (magnitude[bin] > max_magnitude) {
+            max_magnitude = magnitude[bin];
+        }
+    }
+    
+    // Bass boost compensation
+    if (bartotal > 5) {
+        magnitude[1] *= 0.6f;
+        magnitude[2] *= 0.7f;
+        magnitude[3] *= 0.8f;
+        magnitude[4] *= 0.8f;
+        magnitude[5] *= 0.9f;
+    }
+    
+    // Convert to dB scale
+    for (int bin = 1; bin < bartotal; bin++) {
+        if (magnitude[bin] > 0.0f && max_magnitude > 0.0f) {
+            magnitude[bin] = 20.0f * log10f(magnitude[bin] / max_magnitude + 1e-10f);
+        } else {
+            magnitude[bin] = MIN_DB;
+        }
+    }
+    
+    // Clear canvas
+    lv_canvas_fill_bg(fft_canvas_, lv_color_black(), LV_OPA_COVER);
+    
+    // Draw bars (skip DC component k=0)
+    for (int k = 1; k < bartotal; k++) {
+        x_pos = bar_width * (k - 1);
+        float mag = (magnitude[k] - MIN_DB) / (MAX_DB - MIN_DB);
+        mag = std::max(0.0f, std::min(1.0f, mag));
+        int bar_height = (int)(mag * bar_max_height_);
+        
+        // Smooth transition
+        int target_height = bar_height;
+        int current = current_heights_[k - 1];
+        if (target_height > current) {
+            current_heights_[k - 1] = target_height;
+        } else {
+            current_heights_[k - 1] = current - (current - target_height) / 4;
+        }
+        bar_height = current_heights_[k - 1];
+        
+        // Color gradient based on height
+        uint16_t color;
+        if (bar_height > bar_max_height_ * 0.7f) {
+            color = 0xF800;  // Red
+        } else if (bar_height > bar_max_height_ * 0.4f) {
+            color = 0xFFE0;  // Yellow
+        } else {
+            color = 0x07E0;  // Green
+        }
+        
+        draw_bar(x_pos, y_pos, bar_width - 2, bar_height, color, k - 1);
+    }
+}
+
+void LcdDisplay::draw_bar(int x, int y, int bar_width, int bar_height, uint16_t color, int bar_index) {
+    if (fft_canvas_ == nullptr) return;
+    
+    lv_layer_t layer;
+    lv_canvas_init_layer(fft_canvas_, &layer);
+    
+    lv_draw_rect_dsc_t rect_dsc;
+    lv_draw_rect_dsc_init(&rect_dsc);
+    rect_dsc.bg_color = lv_color_hex(color == 0xF800 ? 0xFF0000 : (color == 0xFFE0 ? 0xFFFF00 : 0x00FF00));
+    rect_dsc.bg_opa = LV_OPA_COVER;
+    rect_dsc.radius = 2;
+    
+    lv_area_t area;
+    area.x1 = x + 1;
+    area.x2 = x + bar_width;
+    area.y1 = y - bar_height;
+    area.y2 = y;
+    
+    lv_draw_rect(&layer, &rect_dsc, &area);
+    lv_canvas_finish_layer(fft_canvas_, &layer);
+}
+
+void LcdDisplay::StartFFT() {
+    if (fft_task_handle_ != nullptr) return;
+    
+    ESP_LOGI(TAG, "Starting FFT display");
+    
+    // Allocate FFT buffers in PSRAM
+    if (fft_real_ == nullptr) {
+        fft_real_ = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    }
+    if (fft_imag_ == nullptr) {
+        fft_imag_ = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    }
+    if (hanning_window_ == nullptr) {
+        hanning_window_ = (float*)heap_caps_malloc(LCD_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+        // Initialize Hanning window
+        for (int i = 0; i < LCD_FFT_SIZE; i++) {
+            hanning_window_[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (LCD_FFT_SIZE - 1)));
+        }
+    }
+    if (audio_data_ == nullptr) {
+        audio_data_ = (int16_t*)heap_caps_malloc(sizeof(int16_t) * 1152, MALLOC_CAP_SPIRAM);
+        memset(audio_data_, 0, sizeof(int16_t) * 1152);
+    }
+    if (frame_audio_data_ == nullptr) {
+        frame_audio_data_ = (int16_t*)heap_caps_malloc(sizeof(int16_t) * 1152, MALLOC_CAP_SPIRAM);
+        memset(frame_audio_data_, 0, sizeof(int16_t) * 1152);
+    }
+    
+    // Create canvas
+    {
+        DisplayLockGuard lock(this);
+        create_fft_canvas();
+    }
+    
+    // Reset state
+    fft_task_should_stop_ = false;
+    fft_data_ready_ = false;
+    audio_display_last_update_ = 0;
+    memset(current_heights_, 0, sizeof(current_heights_));
+    
+    // Start FFT task
+    xTaskCreatePinnedToCore(
+        periodicUpdateTaskWrapper,
+        "display_fft",
+        1024 * 4,  // 4KB stack
+        this,
+        1,
+        &fft_task_handle_,
+        0  // Core 0
+    );
+    
+    ESP_LOGI(TAG, "FFT display started");
+}
+
+void LcdDisplay::StopFFT() {
+    ESP_LOGI(TAG, "Stopping FFT display");
+    
+    // Stop the task
+    if (fft_task_handle_ != nullptr) {
+        fft_task_should_stop_ = true;
+        
+        // Wait for task to stop
+        int wait_count = 0;
+        while (fft_task_handle_ != nullptr && wait_count < 100) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            wait_count++;
+        }
+        
+        if (fft_task_handle_ != nullptr) {
+            ESP_LOGW(TAG, "FFT task did not stop gracefully, force deleting");
+            vTaskDelete(fft_task_handle_);
+            fft_task_handle_ = nullptr;
+        }
+    }
+    
+    // Reset state
+    fft_data_ready_ = false;
+    audio_display_last_update_ = 0;
+    memset(current_heights_, 0, sizeof(current_heights_));
+    
+    // Delete canvas
+    {
+        DisplayLockGuard lock(this);
+        if (fft_canvas_ != nullptr) {
+            lv_obj_del(fft_canvas_);
+            fft_canvas_ = nullptr;
+        }
+    }
+    
+    // Free canvas buffer
+    if (fft_canvas_buffer_ != nullptr) {
+        heap_caps_free(fft_canvas_buffer_);
+        fft_canvas_buffer_ = nullptr;
+    }
+    
+    fft_canvas_width_ = 0;
+    fft_canvas_height_ = 0;
+    
+    ESP_LOGI(TAG, "FFT display stopped");
+}
+
+int16_t* LcdDisplay::MakeAudioBuffFFT(size_t sample_count) {
+    if (final_pcm_data_fft_ == nullptr) {
+        final_pcm_data_fft_ = (int16_t*)heap_caps_malloc(sample_count, MALLOC_CAP_SPIRAM);
+    }
+    return final_pcm_data_fft_;
+}
+
+void LcdDisplay::FeedAudioDataFFT(int16_t* data, size_t sample_count) {
+    if (final_pcm_data_fft_ != nullptr) {
+        memcpy(final_pcm_data_fft_, data, sample_count);
+    }
+}
+
+void LcdDisplay::ReleaseAudioBuffFFT(int16_t* buffer) {
+    if (final_pcm_data_fft_ != nullptr) {
+        heap_caps_free(final_pcm_data_fft_);
+        final_pcm_data_fft_ = nullptr;
+    }
+    
+    // Also free other FFT buffers
+    if (fft_real_ != nullptr) {
+        heap_caps_free(fft_real_);
+        fft_real_ = nullptr;
+    }
+    if (fft_imag_ != nullptr) {
+        heap_caps_free(fft_imag_);
+        fft_imag_ = nullptr;
+    }
+    if (hanning_window_ != nullptr) {
+        heap_caps_free(hanning_window_);
+        hanning_window_ = nullptr;
+    }
+    if (audio_data_ != nullptr) {
+        heap_caps_free(audio_data_);
+        audio_data_ = nullptr;
+    }
+    if (frame_audio_data_ != nullptr) {
+        heap_caps_free(frame_audio_data_);
+        frame_audio_data_ = nullptr;
     }
 }

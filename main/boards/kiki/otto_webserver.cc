@@ -3679,7 +3679,7 @@ esp_err_t otto_music_page_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "🎵 Music page requested");
     webserver_reset_auto_stop_timer();
     
-    // HTML page for music player with search and playback
+    // HTML page for music player with search and playback - Modern UI with YouTube Thumbnail
     static const char MUSIC_PAGE[] = R"rawliteral(
 <!DOCTYPE html>
 <html lang="vi">
@@ -3691,17 +3691,17 @@ esp_err_t otto_music_page_handler(httpd_req_t *req) {
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { 
     font-family: 'Segoe UI', system-ui, sans-serif; 
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
     color: #fff; 
     min-height: 100vh;
     padding: 10px;
 }
-.container { max-width: 600px; margin: 0 auto; }
+.container { max-width: 500px; margin: 0 auto; }
 h1 { 
     text-align: center; 
-    font-size: 1.8em; 
-    margin: 15px 0;
-    background: linear-gradient(90deg, #00d2ff, #3a7bd5, #00d2ff);
+    font-size: 1.6em; 
+    margin: 10px 0;
+    background: linear-gradient(90deg, #f953c6, #b91d73, #f953c6);
     background-size: 200% auto;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -3712,99 +3712,179 @@ h1 {
 .search-box {
     display: flex;
     gap: 8px;
-    margin: 15px 0;
+    margin: 12px 0;
 }
 .search-box input {
     flex: 1;
-    padding: 12px 15px;
-    border: 2px solid #3a7bd5;
-    border-radius: 25px;
-    font-size: 16px;
-    background: rgba(255,255,255,0.1);
+    padding: 14px 18px;
+    border: none;
+    border-radius: 30px;
+    font-size: 15px;
+    background: rgba(255,255,255,0.15);
     color: #fff;
     outline: none;
     transition: all 0.3s;
 }
 .search-box input:focus {
-    border-color: #00d2ff;
-    box-shadow: 0 0 15px rgba(0,210,255,0.3);
+    background: rgba(255,255,255,0.25);
+    box-shadow: 0 0 20px rgba(249,83,198,0.4);
 }
 .search-box input::placeholder { color: rgba(255,255,255,0.5); }
-.btn {
-    padding: 12px 20px;
+.btn-search {
+    padding: 14px 22px;
     border: none;
-    border-radius: 25px;
+    border-radius: 30px;
     font-size: 16px;
     cursor: pointer;
-    transition: all 0.3s;
-    font-weight: bold;
-}
-.btn-search {
-    background: linear-gradient(135deg, #3a7bd5, #00d2ff);
+    background: linear-gradient(135deg, #f953c6, #b91d73);
     color: #fff;
+    font-weight: bold;
+    transition: all 0.3s;
 }
-.btn-search:hover { transform: scale(1.05); box-shadow: 0 5px 20px rgba(0,210,255,0.4); }
+.btn-search:hover { transform: scale(1.05); box-shadow: 0 5px 25px rgba(249,83,198,0.5); }
 .btn-search:active { transform: scale(0.95); }
 
-.now-playing {
-    background: rgba(255,255,255,0.1);
-    border-radius: 15px;
+.player-card {
+    background: linear-gradient(145deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%);
+    border-radius: 25px;
     padding: 20px;
     margin: 15px 0;
-    text-align: center;
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255,255,255,0.1);
+    backdrop-filter: blur(15px);
+    border: 1px solid rgba(255,255,255,0.15);
+    box-shadow: 0 10px 40px rgba(0,0,0,0.3);
 }
-.now-playing h3 { color: #00d2ff; margin-bottom: 10px; }
+
+.thumbnail-container {
+    position: relative;
+    width: 100%;
+    padding-bottom: 56.25%;
+    border-radius: 15px;
+    overflow: hidden;
+    margin-bottom: 15px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #302b63 100%);
+}
+.thumbnail {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.5s, opacity 0.5s;
+}
+.thumbnail.loading { opacity: 0.5; }
+.thumbnail-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(transparent 50%, rgba(0,0,0,0.8) 100%);
+    pointer-events: none;
+}
+.vinyl-animation {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, #333 0%, #111 100%);
+    border: 3px solid #444;
+    display: none;
+}
+.vinyl-animation.playing {
+    display: block;
+    animation: spin 3s linear infinite;
+}
+.vinyl-animation::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f953c6, #b91d73);
+}
+@keyframes spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+.song-info {
+    text-align: center;
+    margin-bottom: 15px;
+}
 .song-title {
-    font-size: 1.2em;
+    font-size: 1.3em;
     font-weight: bold;
-    margin: 10px 0;
+    margin-bottom: 5px;
     color: #fff;
-    min-height: 30px;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.3);
 }
 .song-artist {
     color: rgba(255,255,255,0.7);
-    font-size: 0.9em;
+    font-size: 0.95em;
 }
+
+.progress-bar {
+    width: 100%;
+    height: 4px;
+    background: rgba(255,255,255,0.2);
+    border-radius: 2px;
+    margin: 15px 0;
+    overflow: hidden;
+}
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #f953c6, #b91d73);
+    border-radius: 2px;
+    transition: width 0.3s;
+}
+
 .player-controls {
     display: flex;
     justify-content: center;
-    gap: 15px;
-    margin-top: 20px;
+    align-items: center;
+    gap: 20px;
 }
 .ctrl-btn {
-    width: 60px;
-    height: 60px;
+    width: 55px;
+    height: 55px;
     border-radius: 50%;
     border: none;
-    font-size: 24px;
+    font-size: 22px;
     cursor: pointer;
     transition: all 0.3s;
     display: flex;
     align-items: center;
     justify-content: center;
-}
-.ctrl-btn.stop {
-    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    background: rgba(255,255,255,0.1);
     color: #fff;
 }
-.ctrl-btn.stop:hover { transform: scale(1.1); box-shadow: 0 5px 20px rgba(231,76,60,0.4); }
-.ctrl-btn:active { transform: scale(0.9); }
+.ctrl-btn.stop {
+    width: 65px;
+    height: 65px;
+    font-size: 26px;
+    background: linear-gradient(135deg, #ff416c, #ff4b2b);
+}
+.ctrl-btn:hover { transform: scale(1.1); box-shadow: 0 5px 20px rgba(255,65,108,0.4); }
+.ctrl-btn:active { transform: scale(0.95); }
 
 .status-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: 10px 15px;
-    background: rgba(0,0,0,0.3);
-    border-radius: 10px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 12px;
     margin: 10px 0;
     font-size: 0.85em;
 }
 .status-dot {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     margin-right: 8px;
     display: inline-block;
@@ -3812,82 +3892,95 @@ h1 {
 .status-dot.idle { background: #7f8c8d; }
 .status-dot.playing { background: #2ecc71; animation: pulse 1s infinite; }
 .status-dot.loading { background: #f39c12; animation: pulse 0.5s infinite; }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-.quick-list {
-    margin: 15px 0;
+.section-title {
+    color: #f953c6;
+    font-size: 0.9em;
+    margin: 15px 0 10px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
-.quick-list h4 {
-    color: #00d2ff;
-    margin-bottom: 10px;
-    font-size: 0.95em;
-}
+
 .quick-songs {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
 }
 .quick-btn {
-    padding: 8px 15px;
-    background: rgba(255,255,255,0.1);
-    border: 1px solid rgba(255,255,255,0.2);
-    border-radius: 20px;
+    padding: 10px 16px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 25px;
     color: #fff;
     font-size: 0.85em;
     cursor: pointer;
     transition: all 0.3s;
 }
 .quick-btn:hover {
-    background: rgba(58,123,213,0.5);
-    border-color: #3a7bd5;
+    background: linear-gradient(135deg, rgba(249,83,198,0.3), rgba(185,29,115,0.3));
+    border-color: #f953c6;
+    transform: translateY(-2px);
 }
 
 .history-list {
-    margin: 15px 0;
-    max-height: 200px;
+    max-height: 180px;
     overflow-y: auto;
 }
 .history-item {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 10px 15px;
+    padding: 10px 12px;
     background: rgba(255,255,255,0.05);
-    border-radius: 8px;
-    margin-bottom: 5px;
+    border-radius: 10px;
+    margin-bottom: 6px;
     cursor: pointer;
     transition: all 0.3s;
 }
 .history-item:hover {
-    background: rgba(58,123,213,0.3);
+    background: rgba(249,83,198,0.2);
+    transform: translateX(5px);
 }
-.history-item .song { flex: 1; }
-.history-item .time { color: rgba(255,255,255,0.5); font-size: 0.8em; }
+.history-thumb {
+    width: 45px;
+    height: 45px;
+    border-radius: 8px;
+    margin-right: 12px;
+    object-fit: cover;
+    background: #333;
+}
+.history-info { flex: 1; }
+.history-info .song { font-size: 0.9em; margin-bottom: 2px; }
+.history-info .time { color: rgba(255,255,255,0.5); font-size: 0.75em; }
 
 .back-btn {
     display: block;
     text-align: center;
-    padding: 12px;
-    background: rgba(255,255,255,0.1);
-    border-radius: 10px;
+    padding: 14px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 15px;
     color: #fff;
     text-decoration: none;
-    margin-top: 20px;
+    margin-top: 15px;
     transition: all 0.3s;
+    border: 1px solid rgba(255,255,255,0.1);
 }
-.back-btn:hover { background: rgba(255,255,255,0.2); }
+.back-btn:hover { background: rgba(255,255,255,0.15); }
 
 .toast {
     position: fixed;
     bottom: 20px;
     left: 50%;
     transform: translateX(-50%) translateY(100px);
-    background: rgba(0,0,0,0.8);
+    background: linear-gradient(135deg, #f953c6, #b91d73);
     color: #fff;
     padding: 12px 25px;
     border-radius: 25px;
     transition: transform 0.3s;
     z-index: 1000;
+    font-weight: bold;
+    box-shadow: 0 5px 25px rgba(249,83,198,0.4);
 }
 .toast.show { transform: translateX(-50%) translateY(0); }
 </style>
@@ -3897,14 +3990,21 @@ h1 {
     <h1>🎵 Kiki Music</h1>
     
     <div class="search-box">
-        <input type="text" id="searchInput" placeholder="Nhập tên bài hát hoặc ca sĩ..." autocomplete="off">
-        <button class="btn btn-search" onclick="searchMusic()">🔍</button>
+        <input type="text" id="searchInput" placeholder="Tìm bài hát, ca sĩ..." autocomplete="off">
+        <button class="btn-search" onclick="searchMusic()">🔍</button>
     </div>
     
-    <div class="now-playing">
-        <h3>🎧 Đang phát</h3>
-        <div class="song-title" id="songTitle">Chưa có bài hát</div>
-        <div class="song-artist" id="songArtist"></div>
+    <div class="player-card">
+        <div class="thumbnail-container">
+            <img class="thumbnail" id="thumbnail" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 56'%3E%3Crect fill='%23302b63' width='100' height='56'/%3E%3Ctext x='50' y='30' font-size='12' fill='%23fff' text-anchor='middle'%3E🎵%3C/text%3E%3C/svg%3E" alt="thumbnail">
+            <div class="thumbnail-overlay"></div>
+            <div class="vinyl-animation" id="vinyl"></div>
+        </div>
+        <div class="song-info">
+            <div class="song-title" id="songTitle">Chọn bài hát để phát</div>
+            <div class="song-artist" id="songArtist">Kiki Music Player</div>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
         <div class="player-controls">
             <button class="ctrl-btn stop" onclick="stopMusic()">⏹️</button>
         </div>
@@ -3915,21 +4015,18 @@ h1 {
         <span id="bufferInfo"></span>
     </div>
     
-    <div class="quick-list">
-        <h4>🔥 Gợi ý nhanh</h4>
-        <div class="quick-songs">
-            <button class="quick-btn" onclick="playQuick('Shape of You')">Shape of You</button>
-            <button class="quick-btn" onclick="playQuick('Despacito')">Despacito</button>
-            <button class="quick-btn" onclick="playQuick('Lạc Trôi')">Lạc Trôi</button>
-            <button class="quick-btn" onclick="playQuick('See You Again')">See You Again</button>
-            <button class="quick-btn" onclick="playQuick('Đừng Như Thói Quen')">Đừng Như Thói Quen</button>
-            <button class="quick-btn" onclick="playQuick('Attention')">Attention</button>
-        </div>
+    <div class="section-title">🔥 Đề xuất</div>
+    <div class="quick-songs">
+        <button class="quick-btn" onclick="playQuick('Chúng Ta Của Hiện Tại')">Chúng Ta Của Hiện Tại</button>
+        <button class="quick-btn" onclick="playQuick('Lạc Trôi')">Lạc Trôi</button>
+        <button class="quick-btn" onclick="playQuick('See You Again')">See You Again</button>
+        <button class="quick-btn" onclick="playQuick('Despacito')">Despacito</button>
+        <button class="quick-btn" onclick="playQuick('Shape of You')">Shape of You</button>
+        <button class="quick-btn" onclick="playQuick('Có Chắc Yêu Là Đây')">Có Chắc Yêu Là Đây</button>
     </div>
     
-    <div class="history-list" id="historyList">
-        <h4 style="color:#00d2ff;margin-bottom:10px;">📜 Lịch sử phát</h4>
-    </div>
+    <div class="section-title">📜 Lịch sử</div>
+    <div class="history-list" id="historyList"></div>
     
     <a href="/" class="back-btn">⬅️ Quay lại trang chính</a>
 </div>
@@ -3939,7 +4036,10 @@ h1 {
 <script>
 let isPlaying = false;
 let currentSong = '';
+let currentThumbnail = '';
+let progressInterval = null;
 let history = JSON.parse(localStorage.getItem('musicHistory') || '[]');
+const defaultThumb = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 56'%3E%3Crect fill='%23302b63' width='100' height='56'/%3E%3Ctext x='50' y='30' font-size='12' fill='%23fff' text-anchor='middle'%3E🎵%3C/text%3E%3C/svg%3E";
 
 function showToast(msg) {
     const t = document.getElementById('toast');
@@ -3955,22 +4055,61 @@ function setStatus(status, text) {
     txt.textContent = text;
 }
 
-function updateUI(playing, song, artist) {
-    isPlaying = playing;
-    document.getElementById('songTitle').textContent = song || 'Chưa có bài hát';
-    document.getElementById('songArtist').textContent = artist || '';
-    if (playing) {
-        setStatus('playing', 'Đang phát');
-        currentSong = song;
+function setThumbnail(url) {
+    const thumb = document.getElementById('thumbnail');
+    const vinyl = document.getElementById('vinyl');
+    thumb.classList.add('loading');
+    if (url && url.length > 10) {
+        thumb.src = url;
+        thumb.onload = () => { thumb.classList.remove('loading'); vinyl.classList.remove('playing'); };
+        thumb.onerror = () => { thumb.src = defaultThumb; thumb.classList.remove('loading'); };
+        currentThumbnail = url;
     } else {
-        setStatus('idle', 'Sẵn sàng');
+        thumb.src = defaultThumb;
+        thumb.classList.remove('loading');
+        vinyl.classList.add('playing');
     }
 }
 
-function addToHistory(song) {
+function updateUI(playing, song, artist, thumbnail) {
+    isPlaying = playing;
+    document.getElementById('songTitle').textContent = song || 'Chọn bài hát để phát';
+    document.getElementById('songArtist').textContent = artist || 'Kiki Music Player';
+    const vinyl = document.getElementById('vinyl');
+    if (playing) {
+        setStatus('playing', 'Đang phát');
+        currentSong = song;
+        vinyl.classList.add('playing');
+        startProgress();
+        if (thumbnail) setThumbnail(thumbnail);
+    } else {
+        setStatus('idle', 'Sẵn sàng');
+        vinyl.classList.remove('playing');
+        stopProgress();
+        setThumbnail('');
+    }
+}
+
+function startProgress() {
+    stopProgress();
+    let progress = 0;
+    const fill = document.getElementById('progressFill');
+    progressInterval = setInterval(() => {
+        progress += 0.5;
+        if (progress > 100) progress = 0;
+        fill.style.width = progress + '%';
+    }, 500);
+}
+
+function stopProgress() {
+    if (progressInterval) { clearInterval(progressInterval); progressInterval = null; }
+    document.getElementById('progressFill').style.width = '0%';
+}
+
+function addToHistory(song, thumbnail) {
     if (!song) return;
     history = history.filter(h => h.song !== song);
-    history.unshift({ song: song, time: new Date().toLocaleTimeString() });
+    history.unshift({ song: song, time: new Date().toLocaleTimeString(), thumb: thumbnail || '' });
     if (history.length > 10) history.pop();
     localStorage.setItem('musicHistory', JSON.stringify(history));
     renderHistory();
@@ -3978,11 +4117,15 @@ function addToHistory(song) {
 
 function renderHistory() {
     const list = document.getElementById('historyList');
-    let html = '<h4 style="color:#00d2ff;margin-bottom:10px;">📜 Lịch sử phát</h4>';
+    let html = '';
     history.forEach(h => {
+        const thumbUrl = h.thumb || defaultThumb;
         html += `<div class="history-item" onclick="playQuick('${h.song.replace(/'/g, "\\'")}')">
-            <span class="song">${h.song}</span>
-            <span class="time">${h.time}</span>
+            <img class="history-thumb" src="${thumbUrl}" onerror="this.src='${defaultThumb}'">
+            <div class="history-info">
+                <div class="song">${h.song}</div>
+                <div class="time">${h.time}</div>
+            </div>
         </div>`;
     });
     list.innerHTML = html;
@@ -4006,13 +4149,15 @@ function playQuick(song) {
 function playMusic(song) {
     setStatus('loading', 'Đang tìm kiếm...');
     showToast('🔍 Đang tìm: ' + song);
+    setThumbnail('');
     
     fetch('/music/play?song=' + encodeURIComponent(song))
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                updateUI(true, data.title || song, data.artist || '');
-                addToHistory(data.title || song);
+                const thumb = data.thumbnail || '';
+                updateUI(true, data.title || song, data.artist || '', thumb);
+                addToHistory(data.title || song, thumb);
                 showToast('🎵 Đang phát: ' + (data.title || song));
             } else {
                 setStatus('idle', 'Lỗi');
@@ -4029,7 +4174,7 @@ function stopMusic() {
     fetch('/music/stop')
         .then(r => r.json())
         .then(data => {
-            updateUI(false, '', '');
+            updateUI(false, '', '', '');
             showToast('⏹️ Đã dừng phát');
         })
         .catch(e => {
@@ -4043,7 +4188,7 @@ function checkStatus() {
         .then(r => r.json())
         .then(data => {
             if (data.playing !== isPlaying || data.song !== currentSong) {
-                updateUI(data.playing, data.song, data.artist);
+                updateUI(data.playing, data.song, data.artist, data.thumbnail);
             }
             if (data.buffer_size) {
                 document.getElementById('bufferInfo').textContent = 'Buffer: ' + Math.round(data.buffer_size/1024) + 'KB';
@@ -4157,18 +4302,20 @@ esp_err_t otto_music_status_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     
     // Get status from music player
-    extern bool otto_music_get_status(bool* playing, size_t* buffer_size, char* song, int song_len);
+    extern bool otto_music_get_status(bool* playing, size_t* buffer_size, char* song, int song_len, char* artist, int artist_len, char* thumbnail, int thumb_len);
     
     bool playing = false;
     size_t buffer_size = 0;
     char song[200] = {0};
+    char artist[100] = {0};
+    char thumbnail[300] = {0};
     
-    otto_music_get_status(&playing, &buffer_size, song, sizeof(song));
+    otto_music_get_status(&playing, &buffer_size, song, sizeof(song), artist, sizeof(artist), thumbnail, sizeof(thumbnail));
     
-    char response[400];
+    char response[700];
     snprintf(response, sizeof(response), 
-             "{\"playing\":%s,\"song\":\"%s\",\"buffer_size\":%d}",
-             playing ? "true" : "false", song, (int)buffer_size);
+             "{\"playing\":%s,\"song\":\"%s\",\"artist\":\"%s\",\"thumbnail\":\"%s\",\"buffer_size\":%d}",
+             playing ? "true" : "false", song, artist, thumbnail, (int)buffer_size);
     httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
@@ -5432,6 +5579,10 @@ esp_err_t otto_delicious_keyword_save_handler(httpd_req_t *req) {
         nvs_close(nvs_handle);
         
         ESP_LOGI(TAG, "💾 Saved delicious keyword: %s, pose: %s, action_slot: %d", keyword, pose, action_slot);
+        
+        // Reload cached keywords immediately so changes take effect without reboot
+        Application::GetInstance().ReloadCustomKeywords();
+        
         httpd_resp_sendstr(req, "{\"success\":true,\"message\":\"Keyword + Pose + Action saved!\"}");
     } else {
         ESP_LOGE(TAG, "❌ NVS open error: %d", err);

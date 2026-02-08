@@ -579,574 +579,271 @@ public:
 
         // IMPORTANT: I am Kiki, a cute 4-legged dog robot! 🐶
         // I can walk, run, sit, lie down, jump, dance, wave, and do tricks like a real puppy!
-        // Use these tools to control my movements and make me perform adorable actions.
+        // ALL dog actions consolidated into ONE tool to reduce MCP tool count
 
-        // Dog-style movement actions
-        mcp_server.AddTool("self.dog.walk_forward",
-                           "🐕 I walk forward like a cute puppy! Make me walk forward with my 4 legs.\n"
-                           "Args:\n"
-                           "  steps (1-10): How many steps I should walk forward\n"
-                           "  speed (50-500ms): Movement speed - lower is faster, higher is slower\n"
-                           "Example: 'Otto, walk forward 3 steps' or 'Move forward'",
-                           PropertyList({Property("steps", kPropertyTypeInteger, 2, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 150, 50, 500)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int steps = properties["steps"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "⚡ IMMEDIATE ACTION: Walking forward %d steps at speed %dms", steps, speed);
-                               // FAST RESPONSE: Execute immediately like esp-hi, no queue delay
-                               otto_.DogWalk(steps, speed);
-                               otto_.WagTail(3, 100); // Happy tail wag!
-                               ESP_LOGI(TAG, "✅ Walk forward completed with tail wag");
-                               return true;
-                           });
+        // 🔧 CONSOLIDATED DOG CONTROL TOOL (replaces 17 separate tools)
+        mcp_server.AddTool("self.dog",
+            "🐕 Robot dog control. ALL movements in ONE tool.\n"
+            "Actions: walk_forward, walk_backward, turn_left, turn_right, sit, lie, stand, jump, bow, dance, wave, dance4, swing, stretch, pushup, wag, toilet, stop, home\n"
+            "Args:\n"
+            "  action: Movement action name\n"
+            "  steps: Steps/cycles (1-10, default 3)\n"
+            "  speed: Speed in ms (50-500, default 150)",
+            PropertyList({
+                Property("action", kPropertyTypeString),
+                Property("steps", kPropertyTypeInteger, 3, 1, 10),
+                Property("speed", kPropertyTypeInteger, 150, 50, 500)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string action = properties["action"].value<std::string>();
+                int steps = properties["steps"].value<int>();
+                int speed = properties["speed"].value<int>();
+                
+                auto display = Board::GetInstance().GetDisplay();
+                
+                if (action == "walk_forward" || action == "forward" || action == "walk") {
+                    ESP_LOGI(TAG, "🐾 Walking forward %d steps", steps);
+                    otto_.DogWalk(steps, speed);
+                    otto_.WagTail(3, 100);
+                    return true;
+                }
+                else if (action == "walk_backward" || action == "backward" || action == "back") {
+                    ESP_LOGI(TAG, "🐾 Walking backward %d steps", steps);
+                    otto_.DogWalkBack(steps, speed);
+                    otto_.WagTail(3, 100);
+                    return true;
+                }
+                else if (action == "turn_left" || action == "left") {
+                    ESP_LOGI(TAG, "🐾 Turning left %d steps", steps);
+                    otto_.DogTurnLeft(steps, speed);
+                    otto_.WagTail(3, 100);
+                    return true;
+                }
+                else if (action == "turn_right" || action == "right") {
+                    ESP_LOGI(TAG, "🐾 Turning right %d steps", steps);
+                    otto_.DogTurnRight(steps, speed);
+                    otto_.WagTail(3, 100);
+                    return true;
+                }
+                else if (action == "sit" || action == "sit_down") {
+                    ESP_LOGI(TAG, "🐾 Sitting down");
+                    otto_.DogSitDown(speed * 3);
+                    return true;
+                }
+                else if (action == "lie" || action == "lie_down") {
+                    ESP_LOGI(TAG, "🐾 Lying down");
+                    otto_.DogLieDown(speed * 6);
+                    return true;
+                }
+                else if (action == "stand" || action == "stand_up") {
+                    ESP_LOGI(TAG, "🐾 Standing up");
+                    otto_.StandUp();
+                    return true;
+                }
+                else if (action == "jump") {
+                    ESP_LOGI(TAG, "🐾 Jumping");
+                    otto_.DogJump(speed);
+                    return true;
+                }
+                else if (action == "bow") {
+                    ESP_LOGI(TAG, "🐾 Bowing");
+                    otto_.DogBow(speed * 10);
+                    return true;
+                }
+                else if (action == "dance") {
+                    ESP_LOGI(TAG, "🐾 Dancing %d cycles", steps);
+                    if (display) display->SetEmotion("happy");
+                    otto_.DogDance(steps, speed);
+                    return true;
+                }
+                else if (action == "wave" || action == "wave_right_foot") {
+                    ESP_LOGI(TAG, "🐾 Waving paw %d times", steps);
+                    otto_.DogWaveRightFoot(steps, speed / 3);
+                    return true;
+                }
+                else if (action == "dance4" || action == "dance_4_feet") {
+                    ESP_LOGI(TAG, "🐾 Dancing with 4 feet");
+                    if (display) display->SetEmotion("happy");
+                    otto_.DogDance4Feet(steps, speed * 2);
+                    return true;
+                }
+                else if (action == "swing") {
+                    ESP_LOGI(TAG, "🐾 Swinging");
+                    if (display) display->SetEmotion("happy");
+                    otto_.DogSwing(steps, speed / 25);
+                    return true;
+                }
+                else if (action == "stretch" || action == "relax") {
+                    ESP_LOGI(TAG, "🐾 Stretching");
+                    if (display) display->SetEmotion("sleepy");
+                    otto_.DogStretch(steps, speed / 10);
+                    return true;
+                }
+                else if (action == "pushup") {
+                    ESP_LOGI(TAG, "💪 Doing pushups %d times", steps);
+                    if (display) display->SetEmotion("confused");
+                    otto_.DogPushup(steps, speed);
+                    if (display) display->SetEmotion("happy");
+                    return true;
+                }
+                else if (action == "wag" || action == "wag_tail") {
+                    ESP_LOGI(TAG, "🐾 Wagging tail");
+                    if (display) display->SetEmotion("happy");
+                    otto_.WagTail(steps, speed / 1.5);
+                    return true;
+                }
+                else if (action == "toilet") {
+                    ESP_LOGI(TAG, "🚽 Toilet pose");
+                    if (display) display->SetEmotion("embarrassed");
+                    otto_.DogToilet(speed * 20, speed);
+                    if (display) display->SetEmotion("neutral");
+                    return true;
+                }
+                else if (action == "stop") {
+                    ESP_LOGI(TAG, "🛑 Stopping all actions");
+                    if (action_task_handle_ != nullptr) {
+                        vTaskDelete(action_task_handle_);
+                        action_task_handle_ = nullptr;
+                    }
+                    is_action_in_progress_ = false;
+                    xQueueReset(action_queue_);
+                    otto_.Home();
+                    return true;
+                }
+                else if (action == "home") {
+                    ESP_LOGI(TAG, "🏠 Going to home position");
+                    otto_.Home();
+                    return true;
+                }
+                else {
+                    return std::string("{\"success\": false, \"message\": \"Unknown action: ") + action + 
+                           ". Use: walk_forward/backward, turn_left/right, sit, lie, stand, jump, bow, dance, wave, dance4, swing, stretch, pushup, wag, toilet, stop, home\"}";
+                }
+            });
 
-        mcp_server.AddTool("self.dog.walk_backward",
-                           "🐕 I walk backward like a cautious puppy! Make me step back carefully.\n"
-                           "Args:\n"
-                           "  steps (1-10): How many steps I should walk backward\n"
-                           "  speed (50-500ms): Movement speed - lower is faster\n"
-                           "Example: 'Otto, step back' or 'Walk backward 2 steps'",
-                           PropertyList({Property("steps", kPropertyTypeInteger, 2, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 150, 50, 500)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int steps = properties["steps"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "⚡ IMMEDIATE ACTION: Walking backward %d steps at speed %dms", steps, speed);
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogWalkBack(steps, speed);
-                               otto_.WagTail(3, 100); // Happy tail wag!
-                               ESP_LOGI(TAG, "✅ Walk backward completed with tail wag");
-                               return true;
-                           });
+        // 🔧 CONSOLIDATED UTILITY TOOL (replaces show_qr, show_ip, webserver.open)
+        mcp_server.AddTool("self.utils",
+            "🔧 Utility functions: QR code, IP address, webserver\n"
+            "Args:\n"
+            "  action: qr/ip/web\n"
+            "    qr: Show winking emoji 30s for QR code display\n"
+            "    ip: Display WiFi IP address on screen\n"
+            "    web: Start webserver control panel",
+            PropertyList({Property("action", kPropertyTypeString)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string action = properties["action"].value<std::string>();
+                auto display = Board::GetInstance().GetDisplay();
+                
+                if (action == "qr" || action == "show_qr") {
+                    ESP_LOGI(TAG, "📱 Showing QR mode for 30s");
+                    if (display) display->SetEmotion("winking");
+                    if (qr_reset_timer == nullptr) {
+                        qr_reset_timer = xTimerCreate("qr_reset", pdMS_TO_TICKS(30000), 
+                                                       pdFALSE, nullptr, qr_reset_timer_callback);
+                    }
+                    if (qr_reset_timer) {
+                        xTimerStop(qr_reset_timer, 0);
+                        xTimerStart(qr_reset_timer, 0);
+                    }
+                    return true;
+                }
+                else if (action == "ip" || action == "show_ip") {
+                    ESP_LOGI(TAG, "📱 Showing IP address");
+                    if (display) display->SetEmotion("happy");
+                    esp_netif_ip_info_t ip_info;
+                    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                        char ip_str[64];
+                        snprintf(ip_str, sizeof(ip_str), "📱 IP: %d.%d.%d.%d", IP2STR(&ip_info.ip));
+                        if (display) display->SetChatMessage("system", ip_str);
+                        return std::string("{\"ip\": \"") + ip_str + "\"}";
+                    }
+                    return "{\"error\": \"WiFi not connected\"}";
+                }
+                else if (action == "web" || action == "webserver") {
+                    ESP_LOGI(TAG, "🌐 Starting webserver");
+                    extern bool webserver_enabled;
+                    if (!webserver_enabled) {
+                        if (otto_start_webserver() != ESP_OK) return false;
+                    }
+                    if (display) {
+                        display->SetEmotion("happy");
+                        esp_netif_ip_info_t ip_info;
+                        esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                        if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                            char ip_str[64];
+                            snprintf(ip_str, sizeof(ip_str), "📱 IP: %d.%d.%d.%d", IP2STR(&ip_info.ip));
+                            display->SetChatMessage("system", ip_str);
+                        }
+                    }
+                    return true;
+                }
+                return std::string("{\"error\": \"Unknown action. Use: qr, ip, web\"}");
+            });
 
-        mcp_server.AddTool("self.dog.turn_left",
-                           "🐕 I turn left like a playful puppy! Make me spin to the left.\n"
-                           "Args:\n"
-                           "  steps (1-10): How many turning movements\n"
-                           "  speed (50-500ms): Turn speed\n"
-                           "Example: 'Otto, turn left' or 'Spin to the left'",
-                           PropertyList({Property("steps", kPropertyTypeInteger, 3, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 150, 50, 500)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int steps = properties["steps"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "⚡ IMMEDIATE ACTION: Turning left %d steps at speed %dms", steps, speed);
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogTurnLeft(steps, speed);
-                               otto_.WagTail(3, 100); // Happy tail wag!
-                               ESP_LOGI(TAG, "✅ Turn left completed with tail wag");
-                               return true;
-                           });
+        // 🔧 CONSOLIDATED EMOJI TOOL (replaces emoji.toggle, emoji.delicious)
+        mcp_server.AddTool("self.emoji",
+            "😊 Emoji display control\n"
+            "Args:\n"
+            "  action: toggle/delicious\n"
+            "    toggle: Switch between Otto GIF and Twemoji styles\n"
+            "    delicious: Show yummy face for food topics",
+            PropertyList({Property("action", kPropertyTypeString)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string action = properties["action"].value<std::string>();
+                auto display = Board::GetInstance().GetDisplay();
+                
+                if (action == "toggle") {
+                    auto otto_display = dynamic_cast<OttoEmojiDisplay*>(display);
+                    if (otto_display) {
+                        bool current = otto_display->IsUsingOttoEmoji();
+                        otto_display->SetEmojiMode(!current);
+                        otto_display->SetEmotion("happy");
+                        return current ? "{\"mode\": \"twemoji\"}" : "{\"mode\": \"otto_gif\"}";
+                    }
+                    return false;
+                }
+                else if (action == "delicious") {
+                    if (display) display->SetEmotion("delicious");
+                    return true;
+                }
+                return "{\"error\": \"Unknown action. Use: toggle, delicious\"}";
+            });
 
-        mcp_server.AddTool("self.dog.turn_right",
-                           "🐕 I turn right like a curious puppy! Make me spin to the right.\n"
-                           "Args:\n"
-                           "  steps (1-10): How many turning movements\n"
-                           "  speed (50-500ms): Turn speed\n"
-                           "Example: 'Otto, turn right' or 'Look to the right'",
-                           PropertyList({Property("steps", kPropertyTypeInteger, 3, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 150, 50, 500)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int steps = properties["steps"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "⚡ IMMEDIATE ACTION: Turning right %d steps at speed %dms", steps, speed);
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogTurnRight(steps, speed);
-                               otto_.WagTail(3, 100); // Happy tail wag!
-                               ESP_LOGI(TAG, "✅ Turn right completed with tail wag");
-                               return true;
-                           });
+        // 🔧 CONSOLIDATED ALARM TOOL (replaces alarm.set, alarm.cancel)
+        mcp_server.AddTool("self.alarm",
+            "⏰ Alarm timer control\n"
+            "Args:\n"
+            "  action: set/cancel\n"
+            "  minutes: (1-1440) Time in minutes for alarm (only for set)\n"
+            "  message: (optional) Reminder message",
+            PropertyList({
+                Property("action", kPropertyTypeString),
+                Property("minutes", kPropertyTypeInteger, 5, 1, 1440),
+                Property("message", kPropertyTypeString, "")
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                std::string action = properties["action"].value<std::string>();
+                auto display = Board::GetInstance().GetDisplay();
+                
+                if (action == "set") {
+                    int minutes = properties["minutes"].value<int>();
+                    std::string message = properties["message"].value<std::string>();
+                    const char* mode = message.empty() ? "alarm" : "message";
+                    bool success = set_alarm_from_mcp(minutes * 60, mode, message.c_str());
+                    if (success && display) display->SetEmotion("happy");
+                    return success;
+                }
+                else if (action == "cancel") {
+                    bool success = cancel_alarm_from_mcp();
+                    if (success && display) display->SetEmotion("neutral");
+                    return success;
+                }
+                return "{\"error\": \"Use action: set or cancel\"}";
+            });
 
-        mcp_server.AddTool("self.dog.sit_down",
-                           "🐕 I sit down like an obedient puppy! Make me sit nicely.\n"
-                           "Args:\n"
-                           "  delay (100-2000ms): How long the sitting motion takes\n"
-                           "Example: 'Otto, sit!' or 'Sit down like a good boy'",
-                           PropertyList({Property("delay", kPropertyTypeInteger, 500, 100, 2000)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int delay = properties["delay"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is sitting down like a good puppy!");
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogSitDown(delay);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.lie_down",
-                           "🐕 I lie down like a tired puppy ready for a nap! Make me lie down and rest.\n"
-                           "Args:\n"
-                           "  delay (500-3000ms): How long the lying motion takes\n"
-                           "Example: 'Otto, lie down' or 'Take a rest' or 'Nap time!'",
-                           PropertyList({Property("delay", kPropertyTypeInteger, 1000, 500, 3000)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int delay = properties["delay"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is lying down for a nap!");
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogLieDown(delay);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.stand_up",
-                           "🐕 I stand up like a good puppy! Make me stand up from sitting or lying position!\n"
-                           "Use this when user says: 'đứng lên', 'đứng dậy', 'stand up', 'get up', 'dậy đi'\n"
-                           "This will make me stand up straight and ready for action!\n"
-                           "Example: 'Otto, đứng lên!' or 'Stand up!' or 'Get up!'",
-                           PropertyList(),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               ESP_LOGI(TAG, "🧍 Kiki is standing up!");
-                               // FAST RESPONSE: Execute immediately
-                               otto_.StandUp();
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.jump",
-                           "🐕 I jump and dance with excitement like a happy puppy! Make me dance and jump for joy!\n"
-                           "Args:\n"
-                           "  delay (100-1000ms): Jump and dance speed\n"
-                           "Example: 'Otto, dance and jump!' or 'Jump up!' or 'Show me your moves!'",
-                           PropertyList({Property("delay", kPropertyTypeInteger, 200, 100, 1000)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int delay = properties["delay"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is dancing and jumping! 💃🦘");
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogJump(delay);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.bow",
-                           "🐕 I bow like a polite puppy greeting you! Make me bow to show respect.\n"
-                           "Args:\n"
-                           "  delay (1000-5000ms): How long I hold the bow\n"
-                           "Example: 'Otto, bow' or 'Greet me nicely' or 'Say hello with a bow'",
-                           PropertyList({Property("delay", kPropertyTypeInteger, 2000, 1000, 5000)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int delay = properties["delay"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is bowing politely! 🙇");
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogBow(delay);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.dance",
-                           "🐕 I dance and perform like a joyful puppy celebrating! Make me dance with style and happiness!\n"
-                           "Args:\n"
-                           "  cycles (1-10): How many dance moves\n"
-                           "  speed (100-500ms): Dance speed\n"
-                           "Example: 'Otto, dance!' or 'Let's celebrate!' or 'Show me your dance moves!'",
-                           PropertyList({Property("cycles", kPropertyTypeInteger, 3, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 200, 100, 500)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int cycles = properties["cycles"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is dancing with style! 💃✨");
-                               // Set happy emoji
-                               if (auto display = Board::GetInstance().GetDisplay()) {
-                                   display->SetEmotion("happy");
-                               }
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogDance(cycles, speed);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.wave_right_foot",
-                           "🐕 I wave my right paw like a friendly puppy saying hi! Make me wave hello!\n"
-                           "Args:\n"
-                           "  waves (1-10): How many times to wave\n"
-                           "  speed (20-200ms): Wave speed\n"
-                           "Example: 'Otto, wave!' or 'Say hi!' or 'Wave your paw!'",
-                           PropertyList({Property("waves", kPropertyTypeInteger, 5, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 50, 20, 200)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int waves = properties["waves"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is waving his paw! 👋");
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogWaveRightFoot(waves, speed);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.dance_4_feet",
-                           "🐕 I dance with all 4 feet like an excited puppy! Make me dance with coordinated paw movements!\n"
-                           "Args:\n"
-                           "  cycles (1-10): How many dance cycles\n"
-                           "  speed (200-800ms): Dance speed delay\n"
-                           "Example: 'Otto, dance with all your feet!' or 'Do the 4-feet dance!'",
-                           PropertyList({Property("cycles", kPropertyTypeInteger, 6, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 300, 200, 800)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int cycles = properties["cycles"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is dancing with all 4 feet! 🎵");
-                               // Set happy emoji
-                               if (auto display = Board::GetInstance().GetDisplay()) {
-                                   display->SetEmotion("happy");
-                               }
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogDance4Feet(cycles, speed);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.swing",
-                           "🐕 I swing left and right like a happy puppy wagging my whole body! Make me sway with joy!\n"
-                           "Args:\n"
-                           "  cycles (1-20): How many swing cycles\n"
-                           "  speed (5-50ms): Swing speed delay\n"
-                           "Example: 'Otto, swing left and right!' or 'Wag your body!'",
-                           PropertyList({Property("cycles", kPropertyTypeInteger, 8, 1, 20),
-                                         Property("speed", kPropertyTypeInteger, 6, 5, 50)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int cycles = properties["cycles"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is swinging left and right! 🎶");
-                               // Set happy emoji
-                               if (auto display = Board::GetInstance().GetDisplay()) {
-                                   display->SetEmotion("happy");
-                               }
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogSwing(cycles, speed);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.stretch",
-                           "🐕 I relax like a puppy taking it easy! Make me feel relaxed and comfortable!\n"
-                           "Args:\n"
-                           "  cycles (1-5): How many relaxation cycles\n"
-                           "  speed (10-50ms): Relaxation speed delay\n"
-                           "Example: 'Otto, relax!' or 'Take it easy!' or 'Chill out!'",
-                           PropertyList({Property("cycles", kPropertyTypeInteger, 2, 1, 5),
-                                         Property("speed", kPropertyTypeInteger, 15, 10, 50)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int cycles = properties["cycles"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is relaxing! 😌");
-                               // Set sleepy emoji
-                               if (auto display = Board::GetInstance().GetDisplay()) {
-                                   display->SetEmotion("sleepy");
-                               }
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogStretch(cycles, speed);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.pushup",
-                           "🐕💪 I do pushup exercises like a strong puppy training! Make me do pushups to show my strength!\n"
-                           "Args:\n"
-                           "  pushups (1-10): How many pushup repetitions\n"
-                           "  speed (50-300ms): Movement speed between pushups\n"
-                           "Example: 'Otto, do pushups!' or 'Exercise time!' or 'Chống đẩy đi!' or 'Tập thể dục!' or 'Hít đất đi!'",
-                           PropertyList({Property("pushups", kPropertyTypeInteger, 3, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 150, 50, 300)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int pushups = properties["pushups"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "💪 Kiki is doing pushups! Strong puppy!");
-                               
-                               // Set confused emoji IMMEDIATELY to block LLM emoji changes
-                               if (auto display = Board::GetInstance().GetDisplay()) {
-                                   display->SetEmotion("confused");
-                               }
-                               
-                               // Response to LLM first before executing
-                               std::string response = "Được rồi! Để tôi chống đẩy " + std::to_string(pushups) + " cái nhé! 💪";
-                               
-                               // Queue the action to execute after response
-                               OttoActionParams params;
-                               params.action_type = ACTION_DOG_PUSHUP;
-                               params.steps = pushups;
-                               params.speed = speed;
-                               params.direction = 1;  // Default direction
-                               params.amount = 0;     // Not used for pushup
-                               if (xQueueSend(action_queue_, &params, 0) != pdTRUE) {
-                                   ESP_LOGW(TAG, "⚠️ Action queue full, executing directly");
-                                   // Already set confused above, now execute
-                                   otto_.DogPushup(pushups, speed);
-                                   // Set happy after completion
-                                   if (auto display = Board::GetInstance().GetDisplay()) {
-                                       display->SetEmotion("happy");
-                                   }
-                               }
-                               
-                               return response;
-                           });
-
-        mcp_server.AddTool("self.dog.wag_tail",
-                           "🐕🐾 I wag my tail happily like an excited puppy! Make me express my joy by wagging my tail!\n"
-                           "Args:\n"
-                           "  wags (1-10): How many times to wag tail\n"
-                           "  speed (50-200ms): Wagging speed\n"
-                           "Example: 'Otto, wag your tail!' or 'Vẫy đuôi đi!' or 'Show me you're happy!'",
-                           PropertyList({Property("wags", kPropertyTypeInteger, 3, 1, 10),
-                                         Property("speed", kPropertyTypeInteger, 100, 50, 200)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int wags = properties["wags"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "🐾 Kiki is wagging tail happily! 🐕");
-                               // Set happy emoji
-                               if (auto display = Board::GetInstance().GetDisplay()) {
-                                   display->SetEmotion("happy");
-                               }
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.WagTail(wags, speed);
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.dog.toilet",
-                           "🐕🚽 I squat down like a puppy doing bathroom business! Make me do toilet pose!\n"
-                           "Args:\n"
-                           "  hold_ms (1000-5000ms): How long to hold the squat position\n"
-                           "  speed (50-300ms): Movement speed\n"
-                           "Example: 'Otto, go to toilet!' or 'Đi vệ sinh đi!' or 'Bathroom time!'",
-                           PropertyList({Property("hold_ms", kPropertyTypeInteger, 3000, 1000, 5000),
-                                         Property("speed", kPropertyTypeInteger, 150, 50, 300)}),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               int hold_ms = properties["hold_ms"].value<int>();
-                               int speed = properties["speed"].value<int>();
-                               ESP_LOGI(TAG, "🚽 Kiki is doing toilet pose!");
-                               // Set embarrassed emoji
-                               if (auto display = Board::GetInstance().GetDisplay()) {
-                                   display->SetEmotion("embarrassed");
-                               }
-                               // FAST RESPONSE: Execute immediately like esp-hi
-                               otto_.DogToilet(hold_ms, speed);
-                               // Reset emotion after
-                               if (auto display = Board::GetInstance().GetDisplay()) {
-                                   display->SetEmotion("neutral");
-                               }
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.show_qr",
-                           "📱 I show a winking face for 30 seconds to display QR code! Use this when user asks to show QR code, activation code, or control panel access!\n"
-                           "This will display a playful winking emoji for 30 seconds (no movement, no text).\n"
-                           "Example: 'Show me the QR code' or 'Mở mã QR' or 'Display control panel' or 'Hiển thị mã kích hoạt'",
-                           PropertyList(),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               ESP_LOGI(TAG, "📱 MCP QR tool called: showing winking emoji for 30s");
-                               auto display = Board::GetInstance().GetDisplay();
-                               if (display) {
-                                   display->SetEmotion("winking");
-                                   ESP_LOGI(TAG, "😉 Winking emoji set");
-                               }
-                               // Use timer instead of creating new task to save memory
-                               if (qr_reset_timer == nullptr) {
-                                   qr_reset_timer = xTimerCreate("qr_reset", pdMS_TO_TICKS(30000), 
-                                                                  pdFALSE, nullptr, qr_reset_timer_callback);
-                               }
-                               if (qr_reset_timer) {
-                                   xTimerStop(qr_reset_timer, 0);  // Stop if running
-                                   xTimerStart(qr_reset_timer, 0); // Restart for 30s
-                               }
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.show_ip",
-                           "📱 I display my WiFi IP address on screen until TTS ends! Use this when user asks for IP address, network info, or WiFi details!\n"
-                           "This will show the device's current IP address with a happy emoji until TTS finishes.\n"
-                           "Example: 'Show me your IP' or 'Địa chỉ IP là gì' or 'What's your IP address' or 'Hiển thị 192.168'",
-                           PropertyList(),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               ESP_LOGI(TAG, "📱 MCP show_ip tool called - will display IP until TTS ends");
-                               auto display = Board::GetInstance().GetDisplay();
-                               if (display) {
-                                   display->SetEmotion("happy");
-                               }
-                               
-                               // Get IP address
-                               esp_netif_ip_info_t ip_info;
-                               esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                               if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-                                   char ip_str[64];
-                                   snprintf(ip_str, sizeof(ip_str), "📱 IP: %d.%d.%d.%d", 
-                                            IP2STR(&ip_info.ip));
-                                   ESP_LOGI(TAG, "🌟 Station IP: " IPSTR, IP2STR(&ip_info.ip));
-                                   if (display) {
-                                       display->SetChatMessage("system", ip_str);
-                                   }
-                                   ESP_LOGI(TAG, "✅ IP will be displayed until TTS ends");
-                               } else {
-                                   ESP_LOGE(TAG, "❌ Failed to get IP info");
-                                   if (display) {
-                                       display->SetChatMessage("system", "WiFi chưa kết nối!");
-                                   }
-                               }
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.webserver.open",
-                           "🌐 I start the web server control panel and display IP address until TTS ends! Use this when user wants to open control panel, web interface, or access robot controls!\n"
-                           "This will start the HTTP server on port 80 (auto-stops after 30 minutes) and show IP on screen until TTS finishes.\n"
-                           "Example: 'Open control panel' or 'Mở trang điều khiển' or 'Start web server' or 'Bật web interface'",
-                           PropertyList(),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               ESP_LOGI(TAG, "🌐 MCP webserver.open called - will display IP until TTS ends");
-                               extern bool webserver_enabled;
-                               auto display = Board::GetInstance().GetDisplay();
-                               
-                               if (!webserver_enabled) {
-                                   ESP_LOGI(TAG, "🌐 Starting webserver...");
-                                   esp_err_t err = otto_start_webserver();
-                                   if (err != ESP_OK) {
-                                       ESP_LOGE(TAG, "❌ Failed to start webserver");
-                                       return false;
-                                   }
-                               } else {
-                                   ESP_LOGI(TAG, "🌐 Webserver already running");
-                               }
-                               
-                               // Display IP address with happy emoji until TTS ends
-                               if (display) {
-                                   display->SetEmotion("happy");
-                                   
-                                   // Get IP address
-                                   esp_netif_ip_info_t ip_info;
-                                   esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                                   if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-                                       char ip_str[64];
-                                       snprintf(ip_str, sizeof(ip_str), "📱 IP: %d.%d.%d.%d", 
-                                                IP2STR(&ip_info.ip));
-                                       ESP_LOGI(TAG, "🌟 Station IP: " IPSTR, IP2STR(&ip_info.ip));
-                                       display->SetChatMessage("system", ip_str);
-                                       ESP_LOGI(TAG, "✅ IP will be displayed until TTS ends");
-                                   } else {
-                                       ESP_LOGE(TAG, "❌ Failed to get IP info");
-                                       display->SetChatMessage("system", "✅ Web server đã khởi động!");
-                                   }
-                               }
-                               
-                               return true;
-                           });
-
-        mcp_server.AddTool("self.emoji.toggle",
-                           "😊 I switch between Otto GIF emoji and Twemoji! Toggle my emoji display style!\n"
-                           "Use this when user says: 'Đổi biểu cảm', 'Thay biểu cảm', 'Change emoji', 'Switch emoji style'\n"
-                           "Otto GIF: Animated robot expressions (happy.gif, sad.gif, etc.)\n"
-                           "Twemoji: Standard Unicode emoji (😊, 😢, 😍, etc.)\n"
-                           "Example: 'Otto, đổi biểu cảm' or 'Switch to Twemoji'",
-                           PropertyList(),
-                           [this](const PropertyList& properties) -> ReturnValue {
-                               ESP_LOGI(TAG, "😊 MCP emoji.toggle called");
-                               auto display = Board::GetInstance().GetDisplay();
-                               auto otto_display = dynamic_cast<OttoEmojiDisplay*>(display);
-                               
-                               if (otto_display) {
-                                   // Toggle emoji mode
-                                   bool current_mode = otto_display->IsUsingOttoEmoji();
-                                   otto_display->SetEmojiMode(!current_mode);
-                                   
-                                   // Show confirmation message
-                                   if (!current_mode) {
-                                       // Switched to Otto GIF
-                                       ESP_LOGI(TAG, "🤖 Switched to Otto GIF emoji mode");
-                                       otto_display->SetEmotion("happy");
-                                       otto_display->SetChatMessage("system", "Đã chuyển sang Otto GIF emoji 🤖");
-                                   } else {
-                                       // Switched to Twemoji
-                                       ESP_LOGI(TAG, "😊 Switched to Twemoji mode");
-                                       otto_display->SetEmotion("happy");
-                                       otto_display->SetChatMessage("system", "Đã chuyển sang Twemoji 😊");
-                                   }
-                                   
-                                   return true;
-                               } else {
-                                   ESP_LOGE(TAG, "❌ Display is not OttoEmojiDisplay");
-                                   return false;
-                               }
-                           });
-
-        // Get delicious keyword from NVS and create MCP tool
-        {
-            nvs_handle_t nvs_handle;
-            char delicious_keyword[128] = "";
-            if (nvs_open("storage", NVS_READONLY, &nvs_handle) == ESP_OK) {
-                size_t len = sizeof(delicious_keyword);
-                nvs_get_str(nvs_handle, "delicious_kw", delicious_keyword, &len);
-                nvs_close(nvs_handle);
-            }
-            
-            // Create description with the saved keyword
-            std::string keyword_hint = "";
-            if (strlen(delicious_keyword) > 0) {
-                keyword_hint = std::string("User's custom keyword: '") + delicious_keyword + "'\n";
-            }
-            
-            std::string tool_desc = "🍕 I show DELICIOUS emoji (excited happy face) until TTS ends! Use this when talking about:\n"
-                                    "- Food, eating, yummy, tasty things\n"
-                                    "- Pizza, bánh mì, phở, cơm, etc.\n"
-                                    "- Expressions of enjoyment or satisfaction\n" +
-                                    keyword_hint +
-                                    "Example: 'Món này ngon quá' or 'Pizza is delicious' or 'Ăn thôi'";
-            
-            mcp_server.AddTool("self.emoji.delicious",
-                               tool_desc,
-                               PropertyList(),
-                               [this](const PropertyList& properties) -> ReturnValue {
-                                   ESP_LOGI(TAG, "🍕 MCP emoji.delicious called - showing delicious emoji until TTS ends!");
-                                   auto display = Board::GetInstance().GetDisplay();
-                                   if (display) {
-                                       display->SetEmotion("delicious");
-                                       ESP_LOGI(TAG, "✅ Delicious emoji will be displayed until TTS ends");
-                                   }
-                                   return true;
-                               });
-        }
-
-        // ==================== ALARM TOOLS ====================
-        // Note: set_alarm_from_mcp, cancel_alarm_from_mcp declared at file scope
-        
-        mcp_server.AddTool("self.alarm.set",
-                           "⏰ I set an alarm timer! Use this when user wants to set a reminder or alarm!\n"
-                           "Args:\n"
-                           "  minutes (1-1440): Time in MINUTES until alarm (max 24 hours)\n"
-                           "  message (optional): Message to speak when alarm triggers\n"
-                           "Examples:\n"
-                           "  'Đặt báo thức 5 phút' → minutes=5\n"
-                           "  'Nhắc tao 10 phút nữa uống nước' → minutes=10, message='uống nước'\n"
-                           "  'Set alarm for 1 hour' → minutes=60\n"
-                           "  '30 phút nữa nhắc tao' → minutes=30",
-                           PropertyList({Property("minutes", kPropertyTypeInteger, 5, 1, 1440),
-                                         Property("message", kPropertyTypeString, "")}),
-                           [](const PropertyList& properties) -> ReturnValue {
-                               int minutes = properties["minutes"].value<int>();
-                               std::string message = properties["message"].value<std::string>();
-                               int seconds = minutes * 60;
-                               
-                               ESP_LOGI(TAG, "⏰ MCP alarm.set: minutes=%d, message='%s'", minutes, message.c_str());
-                               
-                               // Determine mode based on message
-                               const char* mode = message.empty() ? "alarm" : "message";
-                               
-                               bool success = set_alarm_from_mcp(seconds, mode, message.c_str());
-                               
-                               if (success) {
-                                   auto display = Board::GetInstance().GetDisplay();
-                                   if (display) {
-                                       display->SetEmotion("happy");
-                                   }
-                               }
-                               return success;
-                           });
-        
-        mcp_server.AddTool("self.alarm.cancel",
-                           "⏰ I cancel the current alarm! Use when user wants to stop/cancel alarm!\n"
-                           "Examples: 'Hủy báo thức', 'Cancel alarm', 'Tắt nhắc nhở', 'Stop timer'",
-                           PropertyList(),
-                           [](const PropertyList& properties) -> ReturnValue {
-                               ESP_LOGI(TAG, "⏰ MCP alarm.cancel called");
-                               
-                               bool success = cancel_alarm_from_mcp();
-                               
-                               if (success) {
-                                   auto display = Board::GetInstance().GetDisplay();
-                                   if (display) {
-                                       display->SetEmotion("neutral");
-                                   }
-                               }
-                               return success;
-                           });
-
-        // Legacy movement functions (for compatibility - prefer self.dog.* tools for newer features!)
-
-        // System tools
+        // Legacy movement functions - COMMENTED OUT (already in self.dog tool)
+        /*
         mcp_server.AddTool("self.dog.stop", 
                            "🐕 I stop all my actions immediately like an obedient puppy! Make me stop whatever I'm doing!\n"
                            "Example: 'Otto, stop!' or 'Freeze!' or 'Stay!'", 
@@ -1164,6 +861,7 @@ public:
                                otto_.Home();
                                return true;
                            });
+        */
 
 
         // Comment out to reduce tool count below 32 limit
@@ -1261,134 +959,92 @@ public:
                            });
         */
 
-        // ========== LED CONTROL TOOLS (MERGED) ==========
-        
-        // Tool: LED Control (merged: set_color, set_mode, set_brightness, set_speed, off, save)
+        // ========== CONSOLIDATED LED TOOL (replaces led.control + led.state) ==========
         mcp_server.AddTool(
-            "self.led.control",
-            "[Kiki Robot] 🎨 ĐIỀU KHIỂN 8 ĐÈN LED RGB WS2812. "
-            "CONTROL 8 WS2812 RGB LEDs - đổi màu, chế độ, độ sáng, tốc độ, tắt, lưu. "
-            "GỌI KHI: người dùng nói 'đổi màu led', 'bật đèn đỏ/xanh/vàng/trắng/đen/tím/hồng', 'led cầu vồng', "
-            "'đèn nhấp nháy', 'tắt đèn led', 'giảm độ sáng', 'lưu cài đặt led', 'chế độ thở'... "
-            "WHEN TO CALL: 'change led color', 'red/green/blue/white/black light', 'rainbow led', 'turn off led'... "
-            "TẤT CẢ THAM SỐ LÀ TÙY CHỌN - chỉ cung cấp những gì user muốn thay đổi. "
-            "COLORS: đỏ(255,0,0), xanh lá(0,255,0), xanh dương(0,0,255), vàng(255,255,0), trắng(255,255,255), đen/tắt(0,0,0), tím(128,0,255), hồng(255,105,180), cam(255,165,0). "
-            "MODES: off/tắt, solid/cố định, rainbow/cầu vồng, breathing/thở, chase/chạy, blink/nháy. "
-            "If action='save', current settings will be saved to memory.",
+            "self.led",
+            "🎨 LED control (8x WS2812 RGB)\n"
+            "Args:\n"
+            "  action: set/status/save (default: set)\n"
+            "  red/green/blue: 0-255 RGB color\n"
+            "  mode: off/solid/rainbow/breathing/chase/blink\n"
+            "  brightness: 0-255\n"
+            "  speed: effect speed in ms\n"
+            "Colors: red(255,0,0), green(0,255,0), blue(0,0,255), yellow(255,255,0), white, purple, pink, orange",
             PropertyList({
+                Property("action", kPropertyTypeString, "set"),
                 Property("red", kPropertyTypeInteger, 0, 0, 255),
                 Property("green", kPropertyTypeInteger, 0, 0, 255),
                 Property("blue", kPropertyTypeInteger, 0, 0, 255),
                 Property("mode", kPropertyTypeString),
                 Property("brightness", kPropertyTypeInteger, 0, 0, 255),
-                Property("speed", kPropertyTypeInteger, 0, 0, 500),
-                Property("action", kPropertyTypeString)
+                Property("speed", kPropertyTypeInteger, 0, 0, 500)
             }),
             [](const PropertyList& properties) -> ReturnValue {
-                std::string result = "✅ LED changes: ";
+                std::string action = properties["action"].value<std::string>();
+                
+                // STATUS action - return current LED state
+                if (action == "status" || action == "state" || action == "info") {
+                    const led_state_t* state = kiki_led_get_state();
+                    const char* modes[] = {"Off", "Solid", "Rainbow", "Breathing", "Chase", "Blink"};
+                    const char* mode_name = (state->mode < 6) ? modes[state->mode] : "Unknown";
+                    return std::string("{\"r\":") + std::to_string(state->r) + ",\"g\":" + std::to_string(state->g) + 
+                           ",\"b\":" + std::to_string(state->b) + ",\"brightness\":" + std::to_string(state->brightness) +
+                           ",\"mode\":\"" + mode_name + "\",\"speed\":" + std::to_string(state->speed) + "}";
+                }
+                
+                // SAVE action - save to NVS
+                if (action == "save") {
+                    kiki_led_save_to_nvs();
+                    return "{\"success\":true,\"message\":\"LED settings saved\"}";
+                }
+                
+                // SET action (default) - change LED settings
+                std::string result = "LED: ";
                 bool changed = false;
                 
-                // Get current state for comparison
-                const led_state_t* current = kiki_led_get_state();
-                
-                // Set color if any RGB value is non-zero
                 int r = properties["red"].value<int>();
                 int g = properties["green"].value<int>();
                 int b = properties["blue"].value<int>();
                 if (r > 0 || g > 0 || b > 0) {
                     kiki_led_set_color((uint8_t)r, (uint8_t)g, (uint8_t)b);
                     kiki_led_set_mode(LED_MODE_SOLID);
-                    result += "Color=RGB(" + std::to_string(r) + "," + std::to_string(g) + "," + std::to_string(b) + ") ";
+                    result += "RGB(" + std::to_string(r) + "," + std::to_string(g) + "," + std::to_string(b) + ") ";
                     changed = true;
                 }
                 
-                // Set mode if provided
                 std::string mode_str = properties["mode"].value<std::string>();
                 if (!mode_str.empty()) {
                     led_mode_t mode = LED_MODE_SOLID;
-                    if (mode_str == "off" || mode_str == "tắt") {
-                        mode = LED_MODE_OFF;
-                    } else if (mode_str == "solid" || mode_str == "cố định") {
-                        mode = LED_MODE_SOLID;
-                    } else if (mode_str == "rainbow" || mode_str == "cầu vồng") {
-                        mode = LED_MODE_RAINBOW;
-                    } else if (mode_str == "breathing" || mode_str == "thở") {
-                        mode = LED_MODE_BREATHING;
-                    } else if (mode_str == "chase" || mode_str == "chạy") {
-                        mode = LED_MODE_CHASE;
-                    } else if (mode_str == "blink" || mode_str == "nháy") {
-                        mode = LED_MODE_BLINK;
-                    }
+                    if (mode_str == "off") mode = LED_MODE_OFF;
+                    else if (mode_str == "solid") mode = LED_MODE_SOLID;
+                    else if (mode_str == "rainbow") mode = LED_MODE_RAINBOW;
+                    else if (mode_str == "breathing") mode = LED_MODE_BREATHING;
+                    else if (mode_str == "chase") mode = LED_MODE_CHASE;
+                    else if (mode_str == "blink") mode = LED_MODE_BLINK;
                     kiki_led_set_mode(mode);
-                    result += "Mode=" + mode_str + " ";
+                    result += mode_str + " ";
                     changed = true;
                 }
                 
-                // Set brightness if provided (non-zero)
                 int brightness = properties["brightness"].value<int>();
                 if (brightness > 0) {
                     kiki_led_set_brightness((uint8_t)brightness);
-                    int percent = (brightness * 100) / 255;
-                    result += "Brightness=" + std::to_string(brightness) + "(" + std::to_string(percent) + "%) ";
+                    result += "bright=" + std::to_string((brightness * 100) / 255) + "% ";
                     changed = true;
                 }
                 
-                // Set speed if provided (non-zero, at least 10ms)
                 int speed = properties["speed"].value<int>();
                 if (speed >= 10) {
                     kiki_led_set_speed((uint16_t)speed);
-                    result += "Speed=" + std::to_string(speed) + "ms ";
+                    result += "speed=" + std::to_string(speed) + "ms ";
                     changed = true;
                 }
                 
-                // Apply changes
                 if (changed) {
                     kiki_led_update();
+                    return result;
                 }
-                
-                // Save if requested
-                std::string action = properties["action"].value<std::string>();
-                if (action == "save") {
-                    kiki_led_save_to_nvs();
-                    result += "+ Saved to memory!";
-                }
-                
-                if (!changed && action != "save") {
-                    return std::string("⚠️ No LED parameters provided. Use red/green/blue for color, mode for effect, brightness, speed, or action='save'");
-                }
-                
-                return result;
-            });
-        
-        // Tool: Get LED state
-        mcp_server.AddTool(
-            "self.led.state",
-            "[Kiki Robot] ℹ️ KIỂM TRA TRẠNG THÁI LED / CHECK LED STATE. "
-            "Trả về màu sắc, độ sáng, chế độ hiệu ứng của đèn LED. "
-            "GỌI KHI: người dùng hỏi 'led màu gì', 'đèn đang bật không', 'trạng thái đèn led', 'kiểm tra led'... "
-            "WHEN TO CALL: 'what color is led', 'check led status', 'led info', 'is led on'...",
-            PropertyList(),
-            [](const PropertyList& properties) -> ReturnValue {
-                const led_state_t* state = kiki_led_get_state();
-                std::string mode_name;
-                
-                switch (state->mode) {
-                    case LED_MODE_OFF: mode_name = "Off"; break;
-                    case LED_MODE_SOLID: mode_name = "Solid"; break;
-                    case LED_MODE_RAINBOW: mode_name = "Rainbow"; break;
-                    case LED_MODE_BREATHING: mode_name = "Breathing"; break;
-                    case LED_MODE_CHASE: mode_name = "Chase"; break;
-                    case LED_MODE_BLINK: mode_name = "Blink"; break;
-                    default: mode_name = "Unknown"; break;
-                }
-                
-                return std::string("{\"success\": true, \"color\": {\"r\": ") + std::to_string(state->r) + 
-                       ", \"g\": " + std::to_string(state->g) + ", \"b\": " + std::to_string(state->b) +
-                       "}, \"brightness\": " + std::to_string(state->brightness) +
-                       ", \"mode\": \"" + mode_name + "\", \"speed\": " + std::to_string(state->speed) +
-                       ", \"description\": \"LED is in " + mode_name + " mode with color RGB(" + 
-                       std::to_string(state->r) + "," + std::to_string(state->g) + "," + std::to_string(state->b) +
-                       "), brightness " + std::to_string((state->brightness * 100) / 255) + "%\"}";
+                return "{\"error\":\"Provide color(r,g,b), mode, brightness, or speed\"}";
             });
 
         ESP_LOGI(TAG, "🐾 Dog Robot MCP tools registered (robot + LED control)! 🐶");

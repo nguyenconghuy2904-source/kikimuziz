@@ -215,7 +215,7 @@ Esp32Music::Esp32Music() : last_downloaded_data_(), current_music_url_(), curren
                          last_displayed_song_title_(), last_displayed_lyric_text_(), 
                          last_display_update_time_ms_(0),
                          display_mode_(DISPLAY_MODE_LYRICS), is_playing_(false), is_downloading_(false),
-                         is_stopping_(false), play_thread_(), download_thread_(), audio_buffer_(), buffer_mutex_(), 
+                         is_stopping_(false), is_preparing_(false), play_thread_(), download_thread_(), audio_buffer_(), buffer_mutex_(), 
                          buffer_cv_(), buffer_size_(0), mp3_decoder_(nullptr), mp3_frame_info_(), 
                          mp3_decoder_initialized_(false), aac_decoder_(nullptr), aac_stream_info_(),
                          aac_decoder_initialized_(false), aac_info_ready_(false),
@@ -272,6 +272,69 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     ESP_LOGI(TAG, "小智开源音乐固件qq交流群:826072986");
     ESP_LOGI(TAG, "Searching for: %s", song_name.c_str());
     
+    // 🎵 Set preparing flag FIRST to block TTS/LLM from stealing SRAM
+    // This flag tells Application to ignore incoming TTS/LLM messages
+    is_preparing_ = true;
+    ESP_LOGI(TAG, "🎵 Set is_preparing=true to block TTS/LLM");
+    
+    // 🔇 Disable wake word detection FIRST to free up SRAM for SSL/TLS operations
+    // Wake word uses ~15-20KB SRAM which is needed for HTTPS download
+    // This MUST be done before any HTTP request
+    auto& audio_service = Application::GetInstance().GetAudioService();
+    audio_service.EnableWakeWordDetection(false);
+    ESP_LOGI(TAG, "🔇 Disabled wake word detection to free SRAM for music search");
+    
+    // 🔇 Also disable audio input to free more SRAM (codec buffers)
+    auto codec = Board::GetInstance().GetAudioCodec();
+    if (codec) {
+        codec->EnableInput(false);
+        ESP_LOGI(TAG, "🔇 Disabled audio input to free more SRAM");
+    }
+    
+    // Enable low-SRAM media mode
+    Application::GetInstance().SetMediaLowSramMode(true);
+    
+    // 🏠 Set device to IDLE state immediately when music starts
+    // This ensures the device goes to idle mode and stops listening
+    Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+    ESP_LOGI(TAG, "🏠 Set device to IDLE state for music playback");
+    
+    // 🔊 Disable audio output too to free more SRAM (speaker buffers)
+    if (codec) {
+        codec->EnableOutput(false);
+        ESP_LOGI(TAG, "🔇 Disabled audio output to free more SRAM");
+    }
+    
+    // ⏳ Wait for SRAM to be freed after disabling wake word
+    // Wake word detection uses ~15-20KB SRAM, need time for cleanup
+    // SSL/TLS needs at least 35KB free SRAM for mbedtls operations
+    ESP_LOGI(TAG, "⏳ Waiting for SRAM to be freed...");
+    size_t initial_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "Initial free SRAM: %d bytes", (int)initial_sram);
+    
+    for (int i = 0; i < 20; i++) {  // Wait up to 2 seconds
+        vTaskDelay(pdMS_TO_TICKS(100));  // 100ms delay
+        size_t free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        ESP_LOGI(TAG, "Free SRAM after %dms: %d bytes", (i+1)*100, (int)free_sram);
+        if (free_sram >= 35000) {  // Need at least 35KB for SSL (increased from 25KB)
+            ESP_LOGI(TAG, "✅ Sufficient SRAM available for SSL: %d bytes", (int)free_sram);
+            break;
+        }
+        // Force garbage collection if still low
+        if (i == 10 && free_sram < 35000) {
+            ESP_LOGW(TAG, "⚠️ SRAM still low after 1s (%d bytes), forcing cleanup...", (int)free_sram);
+            // Yield to let other tasks release memory
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+    }
+    
+    // Log final SRAM before SSL
+    size_t final_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "Final free SRAM before SSL: %d bytes (need 35KB)", (int)final_sram);
+    if (final_sram < 35000) {
+        ESP_LOGE(TAG, "❌ SRAM insufficient for SSL! Only %d bytes free", (int)final_sram);
+    }
+    
     // 清空之前的下载数据
     last_downloaded_data_.clear();
     
@@ -281,13 +344,22 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     // 第一步：请求stream_pcm接口获取音频信息
     // 从Settings读取音乐服务器地址
     Settings settings("wifi", false);
-    std::string base_url_raw = settings.GetString("music_srv", "https://nhacminiz.minizjp.com/");
+    std::string base_url_raw = settings.GetString("music_srv", "http://huy.minizjp.com/");
     // Normalize base URL (remove trailing slash if present)
     std::string base_url = normalizeBaseUrl(base_url_raw);
     ESP_LOGI(TAG, "Using music server: %s (normalized from: %s)", base_url.c_str(), base_url_raw.c_str());
     std::string full_url = base_url + "/stream_pcm?song=" + url_encode(song_name) + "&artist=" + url_encode(artist_name);
     
     ESP_LOGI(TAG, "Request URL: %s", full_url.c_str());
+    
+    // 🧹 Force aggressive memory cleanup before SSL connection
+    // Clear any lingering allocations to maximize SRAM for SSL handshake
+    heap_caps_malloc_extmem_enable(2048); // Force small allocations to PSRAM
+    vTaskDelay(pdMS_TO_TICKS(100)); // Let cleanup tasks run
+    
+    // Log SRAM before attempting SSL connection
+    size_t sram_before_ssl = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "💾 Free SRAM before SSL connection: %d bytes", (int)sram_before_ssl);
     
     // 使用Board提供的HTTP客户端 - với retry logic cho DNS errors
     auto network = Board::GetInstance().GetNetwork();
@@ -356,7 +428,16 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
     last_downloaded_data_ = http->ReadAll();
     http->Close();
     
+    // 🧹 Force cleanup SSL resources before second connection
+    // SSL context uses ~30KB SRAM, need to release before opening audio stream
     ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %d", status_code, (int)last_downloaded_data_.length());
+    
+    // Give time for SSL cleanup and heap compaction
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Log SRAM after first connection closed
+    size_t sram_after_close = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "🧹 SRAM after closing metadata connection: %d bytes", (int)sram_after_close);
     ESP_LOGD(TAG, "Complete music details response: %s", last_downloaded_data_.c_str());
     
     // 简单的认证响应检查（可选）
@@ -374,12 +455,27 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
             cJSON* title = cJSON_GetObjectItem(response_json, "title");
             cJSON* audio_url = cJSON_GetObjectItem(response_json, "audio_url");
             cJSON* lyric_url = cJSON_GetObjectItem(response_json, "lyric_url");
+            cJSON* thumbnail = cJSON_GetObjectItem(response_json, "thumbnail");
+            cJSON* video_id = cJSON_GetObjectItem(response_json, "video_id");
             
             if (cJSON_IsString(artist)) {
                 ESP_LOGI(TAG, "Artist: %s", artist->valuestring);
+                current_artist_ = artist->valuestring;
             }
             if (cJSON_IsString(title)) {
                 ESP_LOGI(TAG, "Title: %s", title->valuestring);
+            }
+            
+            // Get thumbnail - priority: thumbnail field > video_id > empty
+            if (cJSON_IsString(thumbnail) && thumbnail->valuestring && strlen(thumbnail->valuestring) > 0) {
+                current_thumbnail_ = thumbnail->valuestring;
+                ESP_LOGI(TAG, "Thumbnail: %s", current_thumbnail_.c_str());
+            } else if (cJSON_IsString(video_id) && video_id->valuestring && strlen(video_id->valuestring) > 0) {
+                // Generate YouTube thumbnail URL from video_id
+                current_thumbnail_ = "https://img.youtube.com/vi/" + std::string(video_id->valuestring) + "/mqdefault.jpg";
+                ESP_LOGI(TAG, "Generated thumbnail from video_id: %s", current_thumbnail_.c_str());
+            } else {
+                current_thumbnail_.clear();
             }
             
             // 检查audio_url是否有效
@@ -412,6 +508,21 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
                     return false;
                 }
                 
+                // 🧹 Delete JSON now to free memory BEFORE opening second SSL connection
+                // JSON object can use several KB of heap
+                std::string title_str = cJSON_IsString(title) ? title->valuestring : song_name;
+                std::string lyric_path_str;
+                if (cJSON_IsString(lyric_url) && lyric_url->valuestring) {
+                    lyric_path_str = lyric_url->valuestring;
+                }
+                cJSON_Delete(response_json);
+                response_json = nullptr;  // Mark as deleted
+                
+                // Wait for memory to be released before second SSL connection
+                vTaskDelay(pdMS_TO_TICKS(50));
+                size_t sram_before_stream = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+                ESP_LOGI(TAG, "🧹 SRAM before StartStreaming: %d bytes", (int)sram_before_stream);
+                
                 ESP_LOGI(TAG, "小智开源音乐固件qq交流群:826072986");
                 ESP_LOGI(TAG, "Starting streaming playback for: %s", song_name.c_str());
                 song_name_displayed_ = false;  // 重置歌名显示标志
@@ -419,9 +530,9 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
                 
                 // 处理歌词URL - 只有在歌词显示模式下且未启用低SRAM模式才启动歌词
                 bool low_sram_mode = Application::GetInstance().IsMediaLowSramMode();
-                if (!low_sram_mode && cJSON_IsString(lyric_url) && lyric_url->valuestring && strlen(lyric_url->valuestring) > 0) {
+                if (!low_sram_mode && !lyric_path_str.empty()) {
                     // 拼接完整的歌词下载URL，使用相同的URL构建逻辑
-                    std::string lyric_path = lyric_url->valuestring;
+                    std::string lyric_path = lyric_path_str;
                     
                     // Ensure lyric_path starts with /
                     if (!lyric_path.empty() && lyric_path[0] != '/') {
@@ -474,14 +585,14 @@ bool Esp32Music::Download(const std::string& song_name, const std::string& artis
                     if (low_sram_mode) {
                         ESP_LOGI(TAG, "Low-SRAM media mode: skip lyrics to save SRAM");
                     } else {
-                        // Only log warning if lyric URL is actually missing (not due to low-SRAM mode)
-                        if (!cJSON_IsString(lyric_url) || !lyric_url->valuestring || strlen(lyric_url->valuestring) == 0) {
+                        // Only log if lyric URL is actually missing (not due to low-SRAM mode)
+                        if (lyric_path_str.empty()) {
                             ESP_LOGD(TAG, "No lyric URL found for this song (this is normal for some songs)");
                         }
                     }
                 }
                 
-                cJSON_Delete(response_json);
+                // response_json already deleted above before StartStreaming()
                 return true;
             } else {
                 // audio_url为空或无效
@@ -512,10 +623,9 @@ bool Esp32Music::StartStreaming(const std::string& music_url) {
     Application::GetInstance().SetMediaLowSramMode(true);
     
     // 🔇 Disable wake word detection to free up SRAM for SSL/TLS operations
-    // Wake word uses ~15-20KB SRAM which is needed for HTTPS download
-    auto& audio_service = Application::GetInstance().GetAudioService();
-    audio_service.EnableWakeWordDetection(false);
-    ESP_LOGI(TAG, "🔇 Disabled wake word detection to free SRAM for music streaming");
+    // Wake word and low-SRAM mode already disabled in Download()
+    // Just log for debugging
+    ESP_LOGI(TAG, "StartStreaming - Wake word already disabled in Download()");
     
     // Reset stopping flag before starting new stream
     is_stopping_.store(false, std::memory_order_release);
@@ -599,12 +709,23 @@ bool Esp32Music::StartStreaming(const std::string& music_url) {
     
     // 开始下载线程
     is_downloading_ = true;
+    is_preparing_ = false;  // 🎵 Reset preparing flag since download started
+    ESP_LOGI(TAG, "🎵 Reset is_preparing=false, is_downloading=true");
+    
+    // 🔊 Re-enable audio output for playback (was disabled during SSL handshake)
+    auto codec = Board::GetInstance().GetAudioCodec();
+    if (codec) {
+        codec->EnableOutput(true);
+        ESP_LOGI(TAG, "🔊 Re-enabled audio output for playback");
+    }
+    
     ESP_LOGI(TAG, "Creating download thread with 5KB stack");
     try {
         download_thread_ = std::thread(&Esp32Music::DownloadAudioStream, this, music_url);
     } catch (const std::system_error& e) {
         ESP_LOGE(TAG, "Failed to create download thread: %s", e.what());
         is_downloading_ = false;
+        is_preparing_ = false;
         return false;
     }
     
@@ -616,6 +737,7 @@ bool Esp32Music::StartStreaming(const std::string& music_url) {
     } catch (const std::system_error& e) {
         ESP_LOGE(TAG, "Failed to create play thread: %s", e.what());
         is_playing_ = false;
+        is_preparing_ = false;
         // Stop download thread
         is_downloading_ = false;
         {
@@ -664,6 +786,7 @@ bool Esp32Music::StopStreaming(bool send_notification) {
     // 停止下载和播放标志
     is_downloading_ = false;
     is_playing_ = false;
+    is_preparing_ = false;  // 🎵 Reset preparing flag when stopping
     
     // ⚡ Close HTTP connection immediately to abort download
     {
@@ -696,6 +819,14 @@ bool Esp32Music::StopStreaming(bool send_notification) {
     auto& audio_service = Application::GetInstance().GetAudioService();
     audio_service.EnableWakeWordDetection(true);
     ESP_LOGI(TAG, "🔊 Re-enabled wake word detection after music stopped");
+    
+    // 🔊 Re-enable audio input and output
+    auto codec = Board::GetInstance().GetAudioCodec();
+    if (codec) {
+        codec->EnableInput(true);
+        codec->EnableOutput(true);
+        ESP_LOGI(TAG, "🔊 Re-enabled audio input and output after music stopped");
+    }
     
     // 重置采样率到原始值
     ResetSampleRate();
@@ -1108,7 +1239,7 @@ void Esp32Music::PlayAudioStream() {
     bool id3_processed = false;
     
     // PCM accumulation để giảm giật/rè - threshold 70ms
-    // Reserve capacity để tránh reallocation và giảm SRAM fragmentation
+    // Reserve capacity để tránh reallocation và giảm fragmentation
     std::vector<int16_t> pcm_accum;
     {
         bool low_sram_mode = Application::GetInstance().IsMediaLowSramMode();
@@ -1119,6 +1250,14 @@ void Esp32Music::PlayAudioStream() {
     // 🎵 Resampler config (using linear resampling for 44100Hz which silk doesn't support)
     int resampler_output_rate = codec->output_sample_rate();
     std::vector<int16_t> resample_buffer;  // Buffer cho PCM đã resample
+    resample_buffer.reserve(4096);  // Pre-allocate để tránh reallocation trong loop
+    
+    // 🎵 Mono conversion buffer - pre-allocate ngoài vòng lặp để giảm fragmentation
+    std::vector<int16_t> mono_buffer;
+    mono_buffer.reserve(1152);  // Max mono samples per MP3 frame (2304/2)
+    
+    // 🎵 SRAM monitor counter
+    int sram_monitor_counter = 0;
     
     // Allocate PCM heap buffer once to avoid large stack usage - chỉ dùng PSRAM
     int16_t* pcm_buffer_heap = (int16_t*)heap_caps_malloc(2304 * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);  // 2304 samples giống repo gốc
@@ -1148,6 +1287,16 @@ void Esp32Music::PlayAudioStream() {
                 ESP_LOGW(TAG, "audio_play low stack: %u words", (unsigned)hw);
             }
         }
+        
+        // 🎵 SRAM Monitor - check every 256 frames to detect memory leaks early
+        if (++sram_monitor_counter >= 256) {
+            sram_monitor_counter = 0;
+            size_t current_free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            if (current_free_sram < 8000) {
+                ESP_LOGW(TAG, "⚠️ Low SRAM during playback: %d bytes free", (int)current_free_sram);
+            }
+        }
+        
         // 检查设备状态，只有在空闲状态才播放音乐
         auto& app = Application::GetInstance();
         DeviceState current_state = app.GetDeviceState();
@@ -1175,7 +1324,15 @@ void Esp32Music::PlayAudioStream() {
             });
             song_name_displayed_ = true;
 
-            // Spectrum visualization disabled
+            // 🎵 Start FFT spectrum visualization
+            Application::GetInstance().Schedule([]() {
+                auto disp = Board::GetInstance().GetDisplay();
+                if (disp) {
+                    disp->MakeAudioBuffFFT(4096);  // Allocate FFT buffer
+                    disp->StartFFT();
+                    ESP_LOGI("Music", "FFT spectrum visualization started");
+                }
+            });
         }
         
         // 如果需要更多MP3数据，从缓冲区读取
@@ -1286,7 +1443,6 @@ void Esp32Music::PlayAudioStream() {
             if (mp3_frame_info_.outputSamps > 0) {
                 int16_t* final_pcm_data = pcm_buffer_heap;
                 int final_sample_count = mp3_frame_info_.outputSamps;
-                std::vector<int16_t> mono_buffer;
                 
                 // 如果是双通道，转换为单通道混合
                 if (mp3_frame_info_.nChans == 2) {
@@ -1294,8 +1450,7 @@ void Esp32Music::PlayAudioStream() {
                     int stereo_samples = mp3_frame_info_.outputSamps;  // 包含左右声道的总样本数
                     int mono_samples = stereo_samples / 2;  // 实际的单声道样本数
                     
-                    // Reserve để tránh reallocation
-                    mono_buffer.reserve(mono_samples);
+                    // Resize mono_buffer (đã reserve ngoài vòng lặp)
                     mono_buffer.resize(mono_samples);
                     
                     for (int i = 0; i < mono_samples; ++i) {
@@ -1346,10 +1501,22 @@ void Esp32Music::PlayAudioStream() {
                                 resampler_output_rate, output_samples);
                         codec->OutputData(resample_buffer);
                         total_played += resample_buffer.size() * sizeof(int16_t);
+                        
+                        // 🎵 Feed resampled PCM to FFT spectrum analyzer
+                        auto disp = Board::GetInstance().GetDisplay();
+                        if (disp) {
+                            disp->FeedAudioDataFFT(resample_buffer.data(), resample_buffer.size());
+                        }
                     } else {
                         // Same sample rate, no resampling needed
                         codec->OutputData(pcm_accum);
                         total_played += pcm_accum.size() * sizeof(int16_t);
+                        
+                        // 🎵 Feed PCM to FFT spectrum analyzer
+                        auto disp = Board::GetInstance().GetDisplay();
+                        if (disp) {
+                            disp->FeedAudioDataFFT(pcm_accum.data(), pcm_accum.size());
+                        }
                     }
 
                     pcm_accum.clear();
@@ -1412,9 +1579,23 @@ void Esp32Music::PlayAudioStream() {
         heap_caps_free(pcm_buffer_heap);
         pcm_buffer_heap = nullptr;
     }
-    // 清理PCM accumulation buffer
+    // 清理PCM accumulation buffer và các vector khác
     pcm_accum.clear();
     pcm_accum.shrink_to_fit(); // Giải phóng memory
+    mono_buffer.clear();
+    mono_buffer.shrink_to_fit();
+    resample_buffer.clear();
+    resample_buffer.shrink_to_fit();
+
+    // 🎵 Stop FFT spectrum visualization and release resources
+    Application::GetInstance().Schedule([]() {
+        auto disp = Board::GetInstance().GetDisplay();
+        if (disp) {
+            disp->StopFFT();
+            disp->ReleaseAudioBuffFFT();
+            ESP_LOGI("Music", "FFT spectrum visualization stopped");
+        }
+    });
 
     FinishPlaybackCleanup(total_played);
 }
@@ -1564,9 +1745,11 @@ void Esp32Music::AacPlaybackLoop() {
     // 🎵 Resampler config (using linear resampling for sample rates silk doesn't support)
     int resampler_output_rate = codec->output_sample_rate();
     std::vector<int16_t> resample_buffer;
+    resample_buffer.reserve(4096);  // Pre-allocate để tránh reallocation
 
     size_t total_played = 0;
     int accum_sample_rate = 0;
+    int sram_monitor_counter = 0;  // SRAM monitor counter
 
     // 立即显示歌曲名称和歌词（如果有）
     UpdateLyricDisplay(0);
@@ -1577,6 +1760,15 @@ void Esp32Music::AacPlaybackLoop() {
             UBaseType_t hw = uxTaskGetStackHighWaterMark(NULL);
             if (hw < 512) {
                 ESP_LOGW(TAG, "audio_play(AAC) low stack: %u words", (unsigned)hw);
+            }
+        }
+        
+        // 🎵 SRAM Monitor for AAC playback
+        if (++sram_monitor_counter >= 256) {
+            sram_monitor_counter = 0;
+            size_t current_free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            if (current_free_sram < 8000) {
+                ESP_LOGW(TAG, "⚠️ Low SRAM during AAC playback: %d bytes free", (int)current_free_sram);
             }
         }
 

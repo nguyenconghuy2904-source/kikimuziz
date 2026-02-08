@@ -41,6 +41,13 @@ public:
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
     virtual bool IsUsingOttoEmoji() { return false; }
+    
+    // FFT Spectrum visualization methods
+    virtual void StartFFT() {}
+    virtual void StopFFT() {}
+    virtual void FeedAudioDataFFT(int16_t* data, size_t sample_count) {}
+    virtual int16_t* MakeAudioBuffFFT(size_t sample_count) { return nullptr; }
+    virtual void ReleaseAudioBuffFFT(int16_t* buffer = nullptr) {}
 
     inline int width() const { return width_; }
     inline int height() const { return height_; }

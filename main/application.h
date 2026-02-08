@@ -11,6 +11,7 @@
 #include <deque>
 #include <memory>
 #include <atomic>
+#include <vector>
 
 #include "protocol.h"
 #include "ota.h"
@@ -71,6 +72,7 @@ public:
     bool IsForcingSillyEmoji() const { return force_silly_emoji_.load(); }  // Check if forcing silly emoji for celebration
     bool IsForcingShockedEmoji() const { return force_shocked_emoji_.load(); }  // Check if forcing shocked emoji for shoot command
     bool IsForcingDeliciousEmoji() const { return force_delicious_emoji_.load(); }  // Check if forcing delicious emoji for custom keyword
+    void ReloadCustomKeywords();  // Reload custom keywords from NVS into cache
     void SetShowingIpAddress(bool showing) { showing_ip_address_.store(showing); }  // Set IP display state
     bool IsShowingIpAddress() const { return showing_ip_address_.load(); }  // Check if showing IP address
     
@@ -114,6 +116,13 @@ private:
     esp_timer_handle_t winking_emoji_timer_handle_ = nullptr;  // Timer to reset winking emoji after 30s
     std::string last_error_message_;
     AudioService audio_service_;
+
+    // Cached custom keywords (loaded from NVS once, updated when changed)
+    std::vector<std::string> cached_keywords_;  // Pre-split keywords for fast matching
+    std::string cached_emoji_;  // Emoji to show when keyword matched
+    std::string cached_pose_;   // Pose name to execute (sit/wave/bow/stretch/swing/dance)
+    int8_t cached_action_slot_ = 0;  // Action slot to execute (memory slot 1-3)
+    bool keywords_loaded_ = false;  // Whether keywords have been loaded from NVS
 
     bool has_server_time_ = false;
     bool aborted_ = false;
